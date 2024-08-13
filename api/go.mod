@@ -8,7 +8,6 @@ require (
 	github.com/BurntSushi/toml v1.1.0
 	github.com/aliyun/alibaba-cloud-sdk-go v1.62.405
 	github.com/aliyun/aliyun-oss-go-sdk v2.2.9+incompatible
-	github.com/eatmoreapple/openwechat v1.2.1
 	github.com/gin-gonic/gin v1.9.1
 	github.com/go-redis/redis/v8 v8.11.5
 	github.com/golang-jwt/jwt/v5 v5.0.0

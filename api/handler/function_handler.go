@@ -8,15 +8,16 @@ package handler
 // * +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 import (
+	"errors"
+	"fmt"
 	"geekai/core"
 	"geekai/core/types"
 	"geekai/service/dalle"
 	"geekai/service/oss"
 	"geekai/store/model"
+	"geekai/store/vo"
 	"geekai/utils"
 	"geekai/utils/resp"
-	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -112,9 +113,12 @@ func (h *FunctionHandler) WeiBo(c *gin.Context) {
 		SetHeader("AppId", h.config.AppId).
 		SetHeader("Authorization", fmt.Sprintf("Bearer %s", h.config.Token)).
 		SetSuccessResult(&res).Get(url)
-	if err != nil || r.IsErrorState() {
-		resp.ERROR(c, fmt.Sprintf("%v%v", err, r.Err))
+	if err != nil {
+		resp.ERROR(c, fmt.Sprintf("%v", err))
 		return
+	}
+	if r.IsErrorState() {
+		resp.ERROR(c, fmt.Sprintf("error http code status: %v", r.Status))
 	}
 
 	if res.Code != types.Success {
@@ -208,7 +212,7 @@ func (h *FunctionHandler) Dall3(c *gin.Context) {
 	}
 
 	content, err := h.dallService.Image(types.DallTask{
-		JobId:   job.Id,
+		Id:      job.Id,
 		UserId:  user.Id,
 		Prompt:  job.Prompt,
 		N:       1,
@@ -223,4 +227,28 @@ func (h *FunctionHandler) Dall3(c *gin.Context) {
 	}
 
 	resp.SUCCESS(c, content)
+}
+
+// List 获取所有的工具函数列表
+func (h *FunctionHandler) List(c *gin.Context) {
+	var items []model.Function
+	err := h.DB.Where("enabled", true).Find(&items).Error
+	if err != nil {
+		resp.ERROR(c, err.Error())
+		return
+	}
+
+	tools := make([]vo.Function, 0)
+	for _, v := range items {
+		var f vo.Function
+		err = utils.CopyObject(v, &f)
+		if err != nil {
+			continue
+		}
+		f.Action = ""
+		f.Token = ""
+		tools = append(tools, f)
+	}
+
+	resp.SUCCESS(c, tools)
 }

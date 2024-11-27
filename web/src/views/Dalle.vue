@@ -59,9 +59,18 @@
                     :autosize="{ minRows: 4, maxRows: 6 }"
                     type="textarea"
                     ref="promptRef"
-                    placeholder="请在此输入绘画提示词，系统会自动翻译中文提示词，高手请直接输入英文提示词"
+                    placeholder="请在此输入绘画提示词，您也可以点击下面的提示词助手生成绘画提示词"
+                    v-loading="isGenerating"
+                    style="--el-mask-color:rgba(100, 100, 100, 0.8)"
                 />
               </div>
+
+              <el-row class="text-info">
+                <el-button class="generate-btn" size="small" @click="generatePrompt" color="#5865f2" :disabled="isGenerating">
+                  <i class="iconfont icon-chuangzuo" style="margin-right: 5px"></i>
+                  <span>生成专业绘画指令</span>
+                </el-button>
+              </el-row>
 
               <div class="text-info">
                 <el-row :gutter="10">
@@ -156,14 +165,14 @@
                           <el-tooltip content="删除" placement="top" effect="light">
                             <el-button type="danger" :icon="Delete" @click="removeImage(slotProp.item)" circle/>
                           </el-tooltip>
-                          <el-tooltip content="分享" placement="top" effect="light" v-if="slotProp.item.publish">
+                          <el-tooltip content="取消分享" placement="top" effect="light" v-if="slotProp.item.publish">
                             <el-button type="warning"
                                        @click="publishImage(slotProp.item, false)"
                                        circle>
                               <i class="iconfont icon-cancel-share"></i>
                             </el-button>
                           </el-tooltip>
-                          <el-tooltip content="取消分享" placement="top" effect="light" v-else>
+                          <el-tooltip content="分享" placement="top" effect="light" v-else>
                             <el-button type="success" @click="publishImage(slotProp.item, true)" circle>
                               <i class="iconfont icon-share-bold"></i>
                             </el-button>
@@ -206,12 +215,13 @@
 import {nextTick, onMounted, onUnmounted, ref} from "vue"
 import {Delete, InfoFilled, Picture} from "@element-plus/icons-vue";
 import {httpGet, httpPost} from "@/utils/http";
-import {ElMessage, ElMessageBox, ElNotification} from "element-plus";
+import {ElMessage, ElMessageBox} from "element-plus";
 import Clipboard from "clipboard";
-import {checkSession, getSystemInfo} from "@/store/cache";
+import {checkSession, getClientId, getSystemInfo} from "@/store/cache";
 import {useSharedStore} from "@/store/sharedata";
 import TaskList from "@/components/TaskList.vue";
 import BackTop from "@/components/BackTop.vue";
+import {showMessageError} from "@/utils/dialog";
 
 const listBoxHeight = ref(0)
 // const paramBoxHeight = ref(0)
@@ -240,6 +250,7 @@ const styles = [
   {name: "自然", value: "natural"}
 ]
 const params = ref({
+  client_id: getClientId(),
   quality: "standard",
   size: "1024x1024",
   style: "vivid",
@@ -268,14 +279,25 @@ onMounted(() => {
   }).catch(e => {
     ElMessage.error("获取系统配置失败：" + e.message)
   })
+
+  store.addMessageHandler("dall",(data) => {
+    // 丢弃无关消息
+    if (data.channel !== "dall" || data.clientId !== getClientId()) {
+      return
+    }
+
+    if (data.body === "FINISH" || data.body === "FAIL") {
+      page.value = 0
+      isOver.value = false
+      fetchFinishJobs()
+    }
+    nextTick(() => fetchRunningJobs())
+  })
 })
 
 onUnmounted(() => {
   clipboard.value.destroy()
-  if (socket.value !== null) {
-    socket.value.close()
-    socket.value = null
-  }
+  store.removeMessageHandler("dall")
 })
 
 const initData = () => {
@@ -287,49 +309,8 @@ const initData = () => {
     page.value = 0
     fetchRunningJobs()
     fetchFinishJobs()
-    connect()
   }).catch(() => {
   });
-}
-
-const socket = ref(null)
-const heartbeatHandle = ref(null)
-const connect = () => {
-  let host = process.env.VUE_APP_WS_HOST
-  if (host === '') {
-    if (location.protocol === 'https:') {
-      host = 'wss://' + location.host;
-    } else {
-      host = 'ws://' + location.host;
-    }
-  }
-
-  const _socket = new WebSocket(host + `/api/dall/client?user_id=${userId.value}`);
-  _socket.addEventListener('open', () => {
-    socket.value = _socket;
-  });
-
-  _socket.addEventListener('message', event => {
-    if (event.data instanceof Blob) {
-      const reader = new FileReader();
-      reader.readAsText(event.data, "UTF-8")
-      reader.onload = () => {
-        const message = String(reader.result)
-        if (message === "FINISH" || message === "FAIL") {
-          page.value = 0
-          isOver.value = false
-          fetchFinishJobs(page.value)
-        }
-        nextTick(() => fetchRunningJobs())
-      }
-    }
-  });
-
-  _socket.addEventListener('close', () => {
-    if (socket.value !== null) {
-      connect()
-    }
-  })
 }
 
 const fetchRunningJobs = () => {
@@ -338,7 +319,7 @@ const fetchRunningJobs = () => {
   }
   // 获取运行中的任务
   httpGet(`/api/dall/jobs?finish=false`).then(res => {
-    runningJobs.value = res.data
+    runningJobs.value = res.data.items
   }).catch(e => {
     ElMessage.error("获取任务失败：" + e.message)
   })
@@ -356,10 +337,10 @@ const fetchFinishJobs = () => {
   page.value = page.value + 1
 
   httpGet(`/api/dall/jobs?finish=true&page=${page.value}&page_size=${pageSize.value}`).then(res => {
-    if (res.data.length < pageSize.value) {
+    if (res.data.items.length < pageSize.value) {
       isOver.value = true
     }
-    const imageList = res.data
+    const imageList = res.data.items
     for (let i = 0; i < imageList.length; i++) {
       imageList[i]["img_thumb"] = imageList[i]["img_url"] + "?imageView2/4/w/300/h/0/q/75"
     }
@@ -391,6 +372,7 @@ const generate = () => {
   httpPost("/api/dall/image", params.value).then(() => {
     ElMessage.success("任务执行成功！")
     power.value -= dallPower.value
+    fetchRunningJobs()
   }).catch(e => {
     ElMessage.error("任务执行失败：" + e.message)
   })
@@ -435,6 +417,21 @@ const publishImage = (item, action) => {
     isOver.value = false
   }).catch(e => {
     ElMessage.error(text + "失败：" + e.message)
+  })
+}
+
+const isGenerating = ref(false)
+const generatePrompt = () => {
+  if (params.value.prompt === "") {
+    return showMessageError("请输入原始提示词")
+  }
+  isGenerating.value = true
+  httpPost("/api/prompt/image", {prompt: params.value.prompt}).then(res => {
+    params.value.prompt = res.data
+    isGenerating.value = false
+  }).catch(e => {
+    showMessageError("生成提示词失败："+e.message)
+    isGenerating.value = false
   })
 }
 

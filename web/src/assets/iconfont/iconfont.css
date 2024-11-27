@@ -1,8 +1,8 @@
 @font-face {
   font-family: "iconfont"; /* Project id 4125778 */
-  src: url('iconfont.woff2?t=1721896403264') format('woff2'),
-       url('iconfont.woff?t=1721896403264') format('woff'),
-       url('iconfont.ttf?t=1721896403264') format('truetype');
+  src: url('iconfont.woff2?t=1731289567907') format('woff2'),
+       url('iconfont.woff?t=1731289567907') format('woff'),
+       url('iconfont.ttf?t=1731289567907') format('truetype');
 }
 
 .iconfont {
@@ -11,6 +11,74 @@
   font-style: normal;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+.icon-linggan:before {
+  content: "\e641";
+}
+
+.icon-chuangzuo:before {
+  content: "\e6cc";
+}
+
+.icon-call:before {
+  content: "\e769";
+}
+
+.icon-hung-up:before {
+  content: "\e609";
+}
+
+.icon-paypal:before {
+  content: "\e666";
+}
+
+.icon-douyin:before {
+  content: "\e8db";
+}
+
+.icon-qq:before {
+  content: "\e69f";
+}
+
+.icon-jd-pay:before {
+  content: "\e8dd";
+}
+
+.icon-luma:before {
+  content: "\e704";
+}
+
+.icon-exchange:before {
+  content: "\e6f5";
+}
+
+.icon-merge:before {
+  content: "\e901";
+}
+
+.icon-upload:before {
+  content: "\e611";
+}
+
+.icon-concat:before {
+  content: "\e630";
+}
+
+.icon-email:before {
+  content: "\e670";
+}
+
+.icon-mobile:before {
+  content: "\e79a";
+}
+
+.icon-drag:before {
+  content: "\e8ec";
+}
+
+.icon-move:before {
+  content: "\e6fd";
 }
 
 .icon-link:before {
@@ -61,7 +129,7 @@
   content: "\e608";
 }
 
-.icon-mp:before {
+.icon-mp3:before {
   content: "\e6c4";
 }
 

@@ -1,6 +1,6 @@
 <template>
   <el-container class="chat-file-list">
-    <div v-for="file in fileList">
+    <div v-for="file in fileList" :key="file.url">
       <div class="image" v-if="isImage(file.ext)">
         <el-image :src="file.url" fit="cover"/>
         <div class="action">
@@ -60,6 +60,7 @@ const removeFile = (file) => {
     display flex
     flex-flow row
     margin-right 10px
+    max-width 600px
     position relative
 
     .el-image {

@@ -7,25 +7,6 @@
 
 import Storage from "good-storage";
 
-const MOBILE_THEME = process.env.VUE_APP_KEY_PREFIX + "MOBILE_THEME"
-const ADMIN_THEME = process.env.VUE_APP_KEY_PREFIX + "ADMIN_THEME"
-
-export function getMobileTheme() {
-    return Storage.get(MOBILE_THEME) ? Storage.get(MOBILE_THEME) : 'light'
-}
-
-export function setMobileTheme(theme) {
-    Storage.set(MOBILE_THEME, theme)
-}
-
-export function getAdminTheme() {
-    return Storage.get(ADMIN_THEME) ? Storage.get(ADMIN_THEME) : 'light'
-}
-
-export function setAdminTheme(theme) {
-    Storage.set(ADMIN_THEME, theme)
-}
-
 export function GetFileIcon(ext) {
     const files = {
         ".docx": "doc.png",
@@ -62,4 +43,12 @@ export function FormatFileSize(bytes) {
     const sizes = ['Bytes', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+export function setRoute(path) {
+    Storage.set(process.env.VUE_APP_KEY_PREFIX + 'ROUTE_',path)
+}
+
+export function getRoute() {
+    return Storage.get(process.env.VUE_APP_KEY_PREFIX + 'ROUTE_')
 }

@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.1.0",
+    "@openai/realtime-api-beta": "github:openai/openai-realtime-api-beta",
     "axios": "^0.27.2",
     "clipboard": "^2.0.11",
     "compressorjs": "^1.2.1",
@@ -27,7 +28,6 @@
     "markmap-view": "^0.16.0",
     "md-editor-v3": "^2.2.1",
     "memfs": "^4.9.3",
-    "mitt": "^3.0.1",
     "pinia": "^2.1.4",
     "qrcode": "^1.5.3",
     "qs": "^6.11.1",

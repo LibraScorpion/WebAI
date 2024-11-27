@@ -47,16 +47,29 @@
         </div>
 
         <el-row class="btn-row" :gutter="20">
-          <el-col :span="12">
+          <el-col :span="24">
             <el-button class="login-btn" type="primary" size="large" @click="submitLogin">登录</el-button>
           </el-col>
+        </el-row>
+
+        <el-row>
           <el-col :span="12">
-            <div class="text">
+            <div class="reg">
               还没有账号？
-              <el-tag @click="login = false">注册</el-tag>
+              <el-button type="primary" class="forget" size="small" @click="login = false">注册</el-button>
+
+              <el-button type="info" class="forget" size="small" @click="showResetPass = true">忘记密码？</el-button>
             </div>
           </el-col>
 
+          <el-col :span="12">
+            <div class="c-login" v-if="wechatLoginURL !== ''">
+              <div class="text">其他登录方式：</div>
+              <div class="login-type">
+                <a class="wechat-login" :href="wechatLoginURL"  @click="setRoute(router.currentRoute.value.path)"><i class="iconfont icon-wechat"></i></a>
+              </div>
+            </div>
+          </el-col>
         </el-row>
       </el-form>
     </div>
@@ -68,7 +81,7 @@
             <div class="block">
               <el-input placeholder="手机号码"
                         size="large"
-                        v-model="data.username"
+                        v-model="data.mobile"
                         maxlength="11"
                         autocomplete="off">
                 <template #prefix>
@@ -93,7 +106,7 @@
                   </el-input>
                 </el-col>
                 <el-col :span="12">
-                  <send-msg size="large" :receiver="data.username"/>
+                  <send-msg size="large" :receiver="data.mobile" type="mobile"/>
                 </el-col>
               </el-row>
             </div>
@@ -102,7 +115,7 @@
             <div class="block">
               <el-input placeholder="邮箱地址"
                         size="large"
-                        v-model="data.username"
+                        v-model="data.email"
                         autocomplete="off">
                 <template #prefix>
                   <el-icon>
@@ -126,7 +139,7 @@
                   </el-input>
                 </el-col>
                 <el-col :span="12">
-                  <send-msg size="large" :receiver="data.username"/>
+                  <send-msg size="large" :receiver="data.email" type="email"/>
                 </el-col>
               </el-row>
             </div>
@@ -217,12 +230,16 @@
         </el-row>
       </div>
     </div>
+
+    <captcha v-if="enableVerify" @success="submit" ref="captchaRef"/>
+
+    <reset-pass @hide="showResetPass = false" :show="showResetPass"/>
   </el-dialog>
 </template>
 
 <script setup>
-import {ref, watch} from "vue"
-import {httpPost} from "@/utils/http";
+import {onMounted, ref, watch} from "vue"
+import {httpGet, httpPost} from "@/utils/http";
 import {ElMessage} from "element-plus";
 import {setUserToken} from "@/store/session";
 import {validateEmail, validateMobile} from "@/utils/validate";
@@ -230,6 +247,11 @@ import {Checked, Close, Iphone, Lock, Message} from "@element-plus/icons-vue";
 import SendMsg from "@/components/SendMsg.vue";
 import {arrayContains} from "@/utils/libs";
 import {getSystemInfo} from "@/store/cache";
+import Captcha from "@/components/Captcha.vue";
+import ResetPass from "@/components/ResetPass.vue";
+import {setRoute} from "@/store/system";
+import {useRouter} from "vue-router";
+import {useSharedStore} from "@/store/sharedata";
 
 // eslint-disable-next-line no-undef
 const props = defineProps({
@@ -244,6 +266,8 @@ const login = ref(true)
 const data = ref({
   username: process.env.VUE_APP_USER,
   password: process.env.VUE_APP_PASS,
+  mobile: "",
+  email: "",
   repass: "",
   code: "",
   invite_code: ""
@@ -251,37 +275,64 @@ const data = ref({
 const enableMobile = ref(false)
 const enableEmail = ref(false)
 const enableUser = ref(false)
-const enableRegister = ref(false)
+const enableRegister = ref(true)
+const wechatLoginURL = ref('')
 const activeName = ref("")
 const wxImg = ref("/images/wx.png")
+const captchaRef = ref(null)
 // eslint-disable-next-line no-undef
 const emits = defineEmits(['hide', 'success']);
+const action = ref("login")
+const enableVerify = ref(false)
+const showResetPass = ref(false)
+const router = useRouter()
+const store = useSharedStore()
+// 是否需要验证码，输入一次密码错之后就要验证码
+const needVerify = ref(false)
 
-getSystemInfo().then(res => {
-  if (res.data) {
-    const registerWays = res.data['register_ways']
-    if (arrayContains(registerWays, "mobile")) {
-      enableMobile.value = true
-      activeName.value = activeName.value === "" ? "mobile" : activeName.value
+onMounted(() => {
+  const returnURL = `${location.protocol}//${location.host}/login/callback?action=login`
+  httpGet("/api/user/clogin?return_url="+returnURL).then(res => {
+    wechatLoginURL.value = res.data.url
+  }).catch(e => {
+    console.log(e.message)
+  })
+
+  getSystemInfo().then(res => {
+    if (res.data) {
+      const registerWays = res.data['register_ways']
+      if (arrayContains(registerWays, "username")) {
+        enableUser.value = true
+        activeName.value = 'username'
+      }
+      if (arrayContains(registerWays, "email")) {
+        enableEmail.value = true
+        activeName.value = 'email'
+      }
+      if (arrayContains(registerWays, "mobile")) {
+        enableMobile.value = true
+        activeName.value = 'mobile'
+      }
+      // 是否启用注册
+      enableRegister.value = res.data['enabled_register']
+      // 使用后台上传的客服微信二维码
+      if (res.data['wechat_card_url'] !== '') {
+        wxImg.value = res.data['wechat_card_url']
+      }
+      enableVerify.value = res.data['enabled_verify']
     }
-    if (arrayContains(registerWays, "email")) {
-      enableEmail.value = true
-      activeName.value = activeName.value === "" ? "email" : activeName.value
-    }
-    if (arrayContains(registerWays, "username")) {
-      enableUser.value = true
-      activeName.value = activeName.value === "" ? "username" : activeName.value
-    }
-    // 是否启用注册
-    enableRegister.value = res.data['enabled_register']
-    // 使用后台上传的客服微信二维码
-    if (res.data['wechat_card_url'] !== '') {
-      wxImg.value = res.data['wechat_card_url']
-    }
-  }
-}).catch(e => {
-  ElMessage.error("获取系统配置失败：" + e.message)
+  }).catch(e => {
+    ElMessage.error("获取系统配置失败：" + e.message)
+  })
 })
+
+const submit = (verifyData) => {
+  if (action.value === "login") {
+      doLogin(verifyData)
+  } else if (action.value === "register") {
+    doRegister(verifyData)
+  }
+}
 
 // 登录操作
 const submitLogin = () => {
@@ -291,28 +342,42 @@ const submitLogin = () => {
   if (data.value.password === '') {
     return ElMessage.error('请输入密码');
   }
+  if (enableVerify.value && needVerify.value) {
+    captchaRef.value.loadCaptcha()
+    action.value = "login"
+  } else {
+    doLogin({})
+  }
+}
 
+const doLogin = (verifyData) => {
+  data.value.key = verifyData.key
+  data.value.dots = verifyData.dots
+  data.value.x = verifyData.x
   httpPost('/api/user/login', data.value).then((res) => {
     setUserToken(res.data.token)
+    store.setIsLogin(true)
     ElMessage.success("登录成功！")
     emits("hide")
     emits('success')
+    needVerify.value = false
   }).catch((e) => {
     ElMessage.error('登录失败，' + e.message)
+    needVerify.value = true
   })
 }
 
 // 注册操作
 const submitRegister = () => {
-  if (data.value.username === '') {
+  if (activeName.value === 'username' && data.value.username === '') {
     return ElMessage.error('请输入用户名');
   }
 
-  if (activeName.value === 'mobile' && !validateMobile(data.value.username)) {
+  if (activeName.value === 'mobile' && !validateMobile(data.value.mobile)) {
     return ElMessage.error('请输入合法的手机号');
   }
 
-  if (activeName.value === 'email' && !validateEmail(data.value.username)) {
+  if (activeName.value === 'email' && !validateEmail(data.value.email)) {
     return ElMessage.error('请输入合法的邮箱地址');
   }
 
@@ -326,9 +391,21 @@ const submitRegister = () => {
   if ((activeName.value === 'mobile' || activeName.value === 'email') && data.value.code === '') {
     return ElMessage.error('请输入验证码');
   }
+  if (enableVerify.value && activeName.value === 'username') {
+    captchaRef.value.loadCaptcha()
+    action.value = "register"
+  } else {
+    doRegister({})
+  }
+}
+
+const doRegister = (verifyData) => {
+  data.value.key = verifyData.key
+  data.value.dots = verifyData.dots
+  data.value.x = verifyData.x
   data.value.reg_way = activeName.value
   httpPost('/api/user/register', data.value).then((res) => {
-    setUserToken(res.data)
+    setUserToken(res.data.token)
     ElMessage.success({
       "message": "注册成功!",
       onClose: () => {
@@ -388,7 +465,7 @@ const close = function () {
     .btn-row {
       display flex
 
-      .el-button {
+      .login-btn {
         width 100%
       }
 
@@ -400,6 +477,44 @@ const close = function () {
         }
       }
 
+      .forget {
+        margin-left 10px
+      }
+    }
+
+    .c-login {
+      display flex
+      .text {
+        font-size 16px
+        color #a1a1a1
+        display: flex;
+        align-items: center;
+      }
+      .login-type {
+        padding 15px
+        display flex
+        justify-content center
+
+        .iconfont {
+          font-size 18px
+          background: #E9F1F6;
+          padding: 8px;
+          border-radius: 50%;
+        }
+        .iconfont.icon-wechat {
+          color #0bc15f
+        }
+      }
+    }
+
+    .reg {
+      height 50px
+      display flex
+      align-items center
+
+      .el-button {
+        margin-left 10px
+      }
     }
   }
 

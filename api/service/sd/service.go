@@ -33,23 +33,36 @@ type Service struct {
 	notifyQueue   *store.RedisQueue
 	db            *gorm.DB
 	uploadManager *oss.UploaderManager
-	leveldb       *store.LevelDB
-	Clients       *types.LMap[uint, *types.WsClient] // UserId => Client
+	wsService     *service.WebsocketService
+	userService   *service.UserService
 }
 
-func NewService(db *gorm.DB, manager *oss.UploaderManager, levelDB *store.LevelDB, redisCli *redis.Client) *Service {
+func NewService(db *gorm.DB, manager *oss.UploaderManager, levelDB *store.LevelDB, redisCli *redis.Client, wsService *service.WebsocketService, userService *service.UserService) *Service {
 	return &Service{
 		httpClient:    req.C(),
 		taskQueue:     store.NewRedisQueue("StableDiffusion_Task_Queue", redisCli),
 		notifyQueue:   store.NewRedisQueue("StableDiffusion_Queue", redisCli),
 		db:            db,
-		leveldb:       levelDB,
-		Clients:       types.NewLMap[uint, *types.WsClient](),
+		wsService:     wsService,
 		uploadManager: manager,
+		userService:   userService,
 	}
 }
 
 func (s *Service) Run() {
+	// 将数据库中未提交的人物加载到队列
+	var jobs []model.SdJob
+	s.db.Where("progress", 0).Find(&jobs)
+	for _, v := range jobs {
+		var task types.SdTask
+		err := utils.JsonDecode(v.TaskInfo, &task)
+		if err != nil {
+			logger.Errorf("decode task info with error: %v", err)
+			continue
+		}
+		task.Id = int(v.Id)
+		s.PushTask(task)
+	}
 	logger.Infof("Starting Stable-Diffusion job consumer")
 	go func() {
 		for {
@@ -62,7 +75,7 @@ func (s *Service) Run() {
 
 			// translate prompt
 			if utils.HasChinese(task.Params.Prompt) {
-				content, err := utils.OpenAIRequest(s.db, fmt.Sprintf(service.RewritePromptTemplate, task.Params.Prompt), "gpt-4o-mini")
+				content, err := utils.OpenAIRequest(s.db, fmt.Sprintf(service.TranslatePromptTemplate, task.Params.Prompt), task.TranslateModelId)
 				if err == nil {
 					task.Params.Prompt = content
 				} else {
@@ -72,7 +85,7 @@ func (s *Service) Run() {
 
 			// translate negative prompt
 			if task.Params.NegPrompt != "" && utils.HasChinese(task.Params.NegPrompt) {
-				content, err := utils.OpenAIRequest(s.db, fmt.Sprintf(service.TranslatePromptTemplate, task.Params.NegPrompt), "gpt-4o-mini")
+				content, err := utils.OpenAIRequest(s.db, fmt.Sprintf(service.TranslatePromptTemplate, task.Params.NegPrompt), task.TranslateModelId)
 				if err == nil {
 					task.Params.NegPrompt = content
 				} else {
@@ -90,7 +103,7 @@ func (s *Service) Run() {
 					"err_msg":  err.Error(),
 				})
 				// 通知前端，任务失败
-				s.notifyQueue.RPush(service.NotifyMessage{UserId: task.UserId, JobId: task.Id, Message: service.TaskStatusFailed})
+				s.notifyQueue.RPush(service.NotifyMessage{ClientId: task.ClientId, UserId: task.UserId, JobId: task.Id, Message: service.TaskStatusFailed})
 				continue
 			}
 		}
@@ -126,9 +139,8 @@ type Txt2ImgResp struct {
 
 // TaskProgressResp 任务进度响应实体
 type TaskProgressResp struct {
-	Progress     float64 `json:"progress"`
-	EtaRelative  float64 `json:"eta_relative"`
-	CurrentImage string  `json:"current_image"`
+	Progress    float64 `json:"progress"`
+	EtaRelative float64 `json:"eta_relative"`
 }
 
 // Txt2Img 文生图 API
@@ -164,7 +176,7 @@ func (s *Service) Txt2Img(task types.SdTask) error {
 	}
 
 	apiURL := fmt.Sprintf("%s/sdapi/v1/txt2img", apiKey.ApiURL)
-	logger.Debugf("send image request to %s", apiURL)
+	logger.Infof("send image request to %s", apiURL)
 	// send a request to sd api endpoint
 	go func() {
 		response, err := s.httpClient.R().
@@ -213,9 +225,7 @@ func (s *Service) Txt2Img(task types.SdTask) error {
 
 			// task finished
 			s.db.Model(&model.SdJob{Id: uint(task.Id)}).UpdateColumn("progress", 100)
-			s.notifyQueue.RPush(service.NotifyMessage{UserId: task.UserId, JobId: task.Id, Message: service.TaskStatusFinished})
-			// 从 leveldb 中删除预览图片数据
-			_ = s.leveldb.Delete(task.Params.TaskId)
+			s.notifyQueue.RPush(service.NotifyMessage{ClientId: task.ClientId, UserId: task.UserId, JobId: task.Id, Message: service.TaskStatusFinished})
 			return nil
 		default:
 			err, resp := s.checkTaskProgress(apiKey)
@@ -223,11 +233,7 @@ func (s *Service) Txt2Img(task types.SdTask) error {
 			if err == nil && resp.Progress > 0 {
 				s.db.Model(&model.SdJob{Id: uint(task.Id)}).UpdateColumn("progress", int(resp.Progress*100))
 				// 发送更新状态信号
-				s.notifyQueue.RPush(service.NotifyMessage{UserId: task.UserId, JobId: task.Id, Message: service.TaskStatusRunning})
-				// 保存预览图片数据
-				if resp.CurrentImage != "" {
-					_ = s.leveldb.Put(task.Params.TaskId, resp.CurrentImage)
-				}
+				s.notifyQueue.RPush(service.NotifyMessage{ClientId: task.ClientId, UserId: task.UserId, JobId: task.Id, Message: service.TaskStatusRunning})
 			}
 			time.Sleep(time.Second)
 		}
@@ -267,14 +273,12 @@ func (s *Service) CheckTaskNotify() {
 			if err != nil {
 				continue
 			}
-			client := s.Clients.Get(uint(message.UserId))
+			logger.Debugf("notify message: %+v", message)
+			client := s.wsService.Clients.Get(message.ClientId)
 			if client == nil {
 				continue
 			}
-			err = client.Send([]byte(message.Message))
-			if err != nil {
-				continue
-			}
+			utils.SendChannelMsg(client, types.ChSd, message.Message)
 		}
 	}()
 }
@@ -298,6 +302,21 @@ func (s *Service) CheckTaskStatus() {
 					job.ErrMsg = "任务超时"
 					s.db.Updates(&job)
 				}
+			}
+
+			// 找出失败的任务，并恢复其扣减算力
+			s.db.Where("progress", service.FailTaskProgress).Where("power > ?", 0).Find(&jobs)
+			for _, job := range jobs {
+				err := s.userService.IncreasePower(job.UserId, job.Power, model.PowerLog{
+					Type:   types.PowerRefund,
+					Model:  "stable-diffusion",
+					Remark: fmt.Sprintf("任务失败，退回算力。任务ID：%d， Err: %s", job.Id, job.ErrMsg),
+				})
+				if err != nil {
+					continue
+				}
+				// 更新任务状态
+				s.db.Model(&job).UpdateColumn("power", 0)
 			}
 			time.Sleep(time.Second * 5)
 		}

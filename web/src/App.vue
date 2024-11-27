@@ -6,6 +6,12 @@
 
 <script setup>
 import {ElConfigProvider} from 'element-plus';
+import {onMounted, ref, watch} from "vue";
+import {checkSession, getClientId, getSystemInfo} from "@/store/cache";
+import {isChrome, isMobile} from "@/utils/libs";
+import {showMessageInfo} from "@/utils/dialog";
+import {useSharedStore} from "@/store/sharedata";
+import {getUserToken} from "@/store/session";
 
 const debounce = (fn, delay) => {
   let timer
@@ -26,6 +32,59 @@ window.ResizeObserver = class ResizeObserver extends _ResizeObserver {
     super(callback);
   }
 }
+
+const store = useSharedStore()
+onMounted(() => {
+  // 获取系统参数
+  getSystemInfo().then((res) => {
+    const link = document.createElement('link')
+    link.rel = 'shortcut icon'
+    link.href = res.data.logo
+    document.head.appendChild(link)
+  })
+  if (!isChrome() && !isMobile()) {
+    showMessageInfo("建议使用 Chrome 浏览器以获得最佳体验。")
+  }
+
+  checkSession().then(() => {
+    store.setIsLogin(true)
+  }).catch(()=>{})
+})
+
+watch(() => store.isLogin, (val) => {
+  if (val) {
+    connect()
+  }
+})
+
+const handler = ref(0)
+// 初始化 websocket 连接
+const connect = () => {
+  let host = process.env.VUE_APP_WS_HOST
+  if (host === '') {
+    if (location.protocol === 'https:') {
+      host = 'wss://' + location.host;
+    } else {
+      host = 'ws://' + location.host;
+    }
+  }
+  const clientId = getClientId()
+  const _socket = new WebSocket(host + `/api/ws?client_id=${clientId}`,["token",getUserToken()]);
+  _socket.addEventListener('open', () => {
+    console.log('WebSocket 已连接')
+    handler.value = setInterval(() => {
+      if (_socket.readyState === WebSocket.OPEN) {
+        _socket.send(JSON.stringify({"type":"ping"}))
+      }
+    },5000)
+  })
+  _socket.addEventListener('close', () => {
+    clearInterval(handler.value)
+    connect()
+  });
+  store.setSocket(_socket)
+}
+
 </script>
 
 
@@ -55,7 +114,8 @@ html, body {
     margin 0;
 
     .el-dialog__body {
-      max-height 90vh
+      //max-height 80vh
+      overflow-y auto
     }
   }
 }

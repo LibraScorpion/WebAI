@@ -17,9 +17,13 @@
         </el-table-column>
         <el-table-column label="应用名称" prop="name">
           <template #default="scope">
-            <span class="sort" :data-id="scope.row.id">{{ scope.row.name }}</span>
+            <span class="sort" :data-id="scope.row.id">
+              <i class="iconfont icon-drag"></i>
+              {{ scope.row.name }}
+            </span>
           </template>
         </el-table-column>
+        <el-table-column label="应用类型" prop="type_name"/>
         <el-table-column label="应用标识" prop="key"/>
         <el-table-column label="绑定模型" prop="model_name"/>
         <el-table-column label="启用状态">
@@ -33,7 +37,7 @@
           </template>
         </el-table-column>
         <el-table-column label="打招呼信息" prop="hello_msg"/>
-        <el-table-column label="操作" width="150" align="right">
+        <el-table-column label="操作" width="150">
           <template #default="scope">
             <el-button size="small" type="primary" @click="rowEdit(scope.$index, scope.row)">编辑</el-button>
             <el-popconfirm title="确定要删除当前应用吗?" @confirm="removeRole(scope.row)" :width="200">
@@ -58,6 +62,21 @@
               v-model="role.name"
               autocomplete="off"
           />
+        </el-form-item>
+        <el-form-item label="应用分类：" prop="tid">
+          <el-select
+              v-model="role.tid"
+              filterable
+              placeholder="请选择分类"
+              clearable
+          >
+            <el-option
+                v-for="item in appTypes"
+                :key="item.id"
+                :label="item.name"
+                :value="item.id"
+            />
+          </el-select>
         </el-form-item>
 
         <el-form-item label="应用标志：" prop="key">
@@ -109,10 +128,14 @@
             <el-table :data="role.context" :border="childBorder" size="small">
               <el-table-column label="对话应用" width="120">
                 <template #default="scope">
-                  <el-input
-                      v-model="scope.row.role"
-                      autocomplete="off"
-                  />
+                  <el-select v-model="scope.row.role" placeholder="Role">
+                    <el-option
+                        v-for="value in messageRoles"
+                        :key="value"
+                        :label="value"
+                        :value="value"
+                    />
+                  </el-select>
                 </template>
               </el-table-column>
               <el-table-column label="对话内容">
@@ -134,11 +157,40 @@
                   <div class="context-msg-content">
                     <el-input
                         type="textarea"
-                        :rows="2"
+                        :rows="3"
                         v-model="scope.row.content"
                         autocomplete="off"
+                        v-loading="isGenerating"
                     />
-                    <span><el-icon @click="removeContext(scope.$index)"><RemoveFilled/></el-icon></span>
+                    <span class="remove-item">
+                      <el-tooltip effect="dark" content="删除当前行" placement="right">
+                        <el-button circle type="danger" size="small">
+                          <el-icon @click="removeContext(scope.$index)"><Delete /></el-icon>
+                        </el-button>
+                      </el-tooltip>
+
+                      <el-popover placement="right" :width="400" trigger="click">
+                        <template #reference>
+                          <el-button type="primary" circle size="small" class="icon-btn">
+                            <i class="iconfont icon-linggan"></i>
+                          </el-button>
+                        </template>
+                        <el-input
+                            type="textarea"
+                            :rows="3"
+                            v-model="metaPrompt"
+                            autocomplete="off"
+                            placeholder="请您输入要 AI实现的目标，任务或者需要AI扮演的角色？"
+                        />
+                        <el-row class="text-line">
+                           <el-text class="mx-1" type="info" size="small">使用 AI 生成 System 预设指令</el-text>
+                          <el-button class="generate-btn" size="small" @click="generatePrompt(scope.row)" color="#5865f2" :disabled="isGenerating">
+                            <i class="iconfont icon-chuangzuo"></i>
+                            <span>立即生成</span>
+                          </el-button>
+                        </el-row>
+                      </el-popover>
+                    </span>
                   </div>
                 </template>
               </el-table-column>
@@ -163,13 +215,14 @@
 
 <script setup>
 
-import {Plus, RemoveFilled} from "@element-plus/icons-vue";
+import {Delete, Plus} from "@element-plus/icons-vue";
 import {onMounted, reactive, ref} from "vue";
 import {httpGet, httpPost} from "@/utils/http";
 import {ElMessage} from "element-plus";
 import {copyObj, removeArrayItem} from "@/utils/libs";
 import {Sortable} from "sortablejs"
 import Compressor from "compressorjs";
+import {showMessageError} from "@/utils/dialog";
 
 const showDialog = ref(false)
 const parentBorder = ref(true)
@@ -192,7 +245,9 @@ const rules = reactive({
   hello_msg: [{required: true, message: '请输入打招呼信息', trigger: 'change',}]
 })
 
+const appTypes = ref([])
 const models = ref([])
+const messageRoles = ref(["system", "user", "assistant"])
 onMounted(() => {
   fetchData()
 
@@ -203,11 +258,25 @@ onMounted(() => {
     ElMessage.error("获取AI模型数据失败");
   })
 
+  // get app type
+  httpGet('/api/admin/app/type/list?enable=1').then((res) => {
+    appTypes.value = res.data
+  }).catch(() => {
+    ElMessage.error("获取应用分类数据失败");
+  })
+
 })
 
 const fetchData = () => {
   // 获取应用列表
   httpGet('/api/admin/role/list').then((res) => {
+    // 初始化数据
+    // const arr = res.data;
+    // for (let i = 0; i < arr.length; i++) {
+    //   if(arr[i].model_id == 0){
+    //     arr[i].model_id = ''
+    //   }
+    // }
     tableData.value = res.data
     sortedTableData.value = copyObj(tableData.value)
     loading.value = false
@@ -320,7 +389,23 @@ const uploadImg = (file) => {
       ElMessage.error('上传失败:' + e.message)
     },
   });
-};
+}
+
+const isGenerating = ref(false)
+const metaPrompt = ref("")
+const generatePrompt = (row) => {
+  if (metaPrompt.value === "") {
+    return showMessageError("请输入元提示词")
+  }
+  isGenerating.value = true
+  httpPost("/api/prompt/meta", {prompt: metaPrompt.value}).then(res => {
+    row.content = res.data
+    isGenerating.value = false
+  }).catch(e => {
+    showMessageError("生成失败："+e.message)
+    isGenerating.value = false
+  })
+}
 </script>
 
 <style lang="stylus" scoped>
@@ -357,12 +442,18 @@ const uploadImg = (file) => {
   .context-msg-content {
     display flex
 
-    .el-icon {
-      font-size: 20px;
-      margin-top 5px;
-      margin-left 5px;
-      cursor pointer
+    .remove-item {
+      display flex
+      padding 10px
+      flex-flow column
+      align-items center
+      justify-content  center
+
+      .icon-btn {
+        margin 10px 0 0 0
+      }
     }
+
   }
 
   .el-input--small {
@@ -373,10 +464,28 @@ const uploadImg = (file) => {
     }
   }
 
+  .sort {
+    cursor move
+    .iconfont {
+      position relative
+      top 1px
+    }
+  }
+
   .pagination {
     padding 20px 0
     display flex
     justify-content right
+  }
+}
+
+.text-line {
+  display flex
+  justify-content space-between
+  padding-top 10px
+  .iconfont {
+    margin-right 5px
+    font-size 14px
   }
 }
 </style>

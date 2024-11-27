@@ -107,12 +107,34 @@
                   </div>
                 </el-form-item>
 
+                <el-form-item label="启用验证码" prop="enabled_verify">
+                  <div class="tip-input">
+                    <el-switch v-model="system['enabled_verify']"/>
+                    <div class="info">
+                      <el-tooltip
+                          effect="dark"
+                          content="启用验证码之后，注册登录都会加载行为验证码，增加安全性。此功能需要购买验证码服务才会生效。"
+                          raw-content
+                          placement="right"
+                      >
+                        <el-icon>
+                          <InfoFilled/>
+                        </el-icon>
+                      </el-tooltip>
+                    </div>
+                  </div>
+                </el-form-item>
+
                 <el-form-item label="注册方式" prop="register_ways">
                   <el-checkbox-group v-model="system['register_ways']">
                     <el-checkbox value="mobile">手机注册</el-checkbox>
                     <el-checkbox value="email">邮箱注册</el-checkbox>
                     <el-checkbox value="username">用户名注册</el-checkbox>
                   </el-checkbox-group>
+                </el-form-item>
+
+                <el-form-item label="邮件域名白名单" prop="register_ways">
+                  <items-input v-model:value="system['email_white_list']"/>
                 </el-form-item>
 
                 <el-form-item label="微信客服二维码" prop="wechat_card_url">
@@ -131,14 +153,13 @@
                     </template>
                   </el-input>
                 </el-form-item>
-                <el-form-item label="默认AI模型" prop="default_models">
+                <el-form-item label="默认翻译模型">
                   <template #default>
                     <div class="tip-input">
                       <el-select
-                          v-model="system['default_models']"
-                          multiple
+                          v-model.number="system['translate_model_id']"
                           :filterable="true"
-                          placeholder="选择AI模型，多选"
+                          placeholder="选择一个默认模型来翻译提示词"
                           style="width: 100%"
                       >
                         <el-option
@@ -284,6 +305,9 @@
                 <el-form-item label="Suno 算力" prop="suno_power">
                   <el-input v-model.number="system['suno_power']" placeholder="使用 Suno 生成一首音乐消耗算力"/>
                 </el-form-item>
+                <el-form-item label="Luma 算力" prop="luma_power">
+                  <el-input v-model.number="system['luma_power']" placeholder="使用 Luma 生成一段视频消耗算力"/>
+                </el-form-item>
               </el-tab-pane>
             </el-tabs>
 
@@ -358,6 +382,12 @@
             </el-descriptions-item>
           </el-descriptions>
 
+          <h3>激活后可获得以下权限：</h3>
+          <ol class="active-info">
+            <li>1、使用任意第三方中转 API KEY，而不用局限于 GeekAI 推荐的白名单列表</li>
+            <li>2、可以在相关页面去除 GeekAI 的版权信息，或者修改为自己的版权信息</li>
+          </ol>
+
           <el-form :model="system" label-width="150px" label-position="right">
             <el-form-item label="许可授权码" prop="license">
               <el-input v-model="licenseKey"/>
@@ -369,6 +399,18 @@
           </el-form>
         </div>
       </el-tab-pane>
+
+      <el-tab-pane label="修复数据" name="fixData">
+        <div class="container">
+<!--          <p class="text">有些版本升级的时候更新了数据库的结构，比如字段名字改了，需要把之前的字段的值转移到其他字段，这些无法通过简单的 SQL 语句可以实现的，需要手动写程序修正数据。</p>-->
+
+<!--          <p class="text">当前版本 v4.1.4 需要修正用户数据，增加了 mobile 和 email 字段，需要把之前用手机号或者邮箱注册的用户的 username 字段数据初始化到 mobile 或者 email 字段。另外，需要把订单的支付渠道从名字称修正为 key。</p>-->
+
+<!--          <el-text type="danger">请注意：在修复数据前，请先备份好数据库，以免数据丢失！</el-text>-->
+
+          <p><el-button type="primary" @click="fixData">立即修复</el-button></p>
+        </div>
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
@@ -377,12 +419,13 @@
 import {onMounted, reactive, ref} from "vue";
 import {httpGet, httpPost} from "@/utils/http";
 import Compressor from "compressorjs";
-import {ElMessage} from "element-plus";
+import {ElMessage, ElMessageBox} from "element-plus";
 import {InfoFilled, UploadFilled,Select,CloseBold} from "@element-plus/icons-vue";
 import MdEditor from "md-editor-v3";
 import 'md-editor-v3/lib/style.css';
 import Menu from "@/views/admin/Menu.vue";
 import {copyObj, dateFormat} from "@/utils/libs";
+import ItemsInput from "@/components/ui/ItemsInput.vue";
 
 const activeName = ref('basic')
 const system = ref({models: []})
@@ -431,7 +474,7 @@ onMounted(() => {
 })
 
 const fetchLicense = () => {
-  httpGet("/api/admin/config/get/license").then(res => {
+  httpGet("/api/admin/config/license").then(res => {
     license.value = res.data
   }).catch(e => {
     ElMessage.error("获取 License 失败：" + e.message)
@@ -448,7 +491,6 @@ const save = function (key) {
   if (key === 'system') {
     systemFormRef.value.validate((valid) => {
       if (valid) {
-        system.value['power_price'] = parseFloat(system.value['power_price']) ?? 0
         httpPost('/api/admin/config/update', {key: key, config: system.value, config_bak: configBak.value}).then(() => {
           ElMessage.success("操作成功！")
         }).catch(e => {
@@ -471,7 +513,7 @@ const active = () => {
   if (licenseKey.value === "") {
     return ElMessage.error("请输入授权码")
   }
-  httpPost("/api/admin/active", {license: licenseKey.value}).then(res => {
+  httpPost("/api/admin/config/active", {license: licenseKey.value}).then(res => {
     ElMessage.success("授权成功，机器编码为：" + res.data)
     fetchLicense()
   }).catch(e => {
@@ -525,6 +567,28 @@ const onUploadImg = (files, callback) => {
   })
 };
 
+const fixData = () => {
+
+  ElMessageBox.confirm(
+      '在修复数据前，请先备份好数据库，以免数据丢失！是否继续操作?',
+      '警告',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning',
+      }
+  ).then(() => {
+    loading.value = true
+    httpGet("/api/admin/config/fixData").then(() => {
+      ElMessage.success("数据修复成功")
+      loading.value = false
+    }).catch(e => {
+      loading.value = false
+      ElMessage.error("数据修复失败：" + e.message)
+    })
+  })
+}
+
 
 </script>
 
@@ -574,6 +638,15 @@ const onUploadImg = (files, callback) => {
         }
       }
 
+
+      .text {
+        font-size 14px
+      }
+
+      .active-info {
+        line-height 1.5
+        padding 10px 0 30px 0
+      }
       .el-descriptions {
         margin-bottom 20px
         .el-icon {

@@ -21,7 +21,6 @@
                   <div class="flex-col items-center"
                        :class="item.value === params.rate ? 'grid-content active' : 'grid-content'"
                        @click="changeRate(item)">
-                    <!--                    <div :class="'shape ' + item.css"></div>-->
                     <el-image class="icon" :src="item.img" fit="cover"></el-image>
                     <div class="text">{{ item.text }}</div>
                   </div>
@@ -183,11 +182,20 @@
                       </div>
                     </div>
 
-                    <div class="param-line pt">
+                    <div class="param-line pt" style="position: relative">
                       <el-input v-model="params.prompt" :autosize="{ minRows: 4, maxRows: 6 }" type="textarea"
                                 ref="promptRef"
-                                placeholder="请在此输入绘画提示词，系统会自动翻译中文提示词，高手请直接输入英文提示词"/>
+                                v-loading="isGenerating"
+                                style="--el-mask-color:rgba(100, 100, 100, 0.8)"
+                                placeholder="请在此输入绘画提示词，您也可以点击下面的提示词助手生成绘画提示词"/>
                     </div>
+
+                    <el-row class="text-info">
+                      <el-button class="generate-btn" size="small" @click="generatePrompt" color="#5865f2" :disabled="isGenerating">
+                        <i class="iconfont icon-chuangzuo"></i>
+                        <span>生成专业绘画指令</span>
+                      </el-button>
+                    </el-row>
 
                     <div class="param-line pt">
                       <div class="flex-row justify-between items-center">
@@ -215,7 +223,7 @@
                   <div class="param-line">
                     <div class="img-inline">
                       <div class="img-list-box">
-                        <div class="img-item" v-for="imgURL in imgList">
+                        <div class="img-item" v-for="imgURL in imgList" :key="imgURL">
                           <el-image :src="imgURL" fit="cover"/>
                           <el-button type="danger" :icon="Delete" @click="removeUploadImage(imgURL)" circle/>
                         </div>
@@ -265,8 +273,17 @@
                     <div class="param-line pt">
                       <el-input v-model="params.prompt" :autosize="{ minRows: 4, maxRows: 6 }" type="textarea"
                                 ref="promptRef"
+                                v-loading="isGenerating"
+                                style="--el-mask-color:rgba(100, 100, 100, 0.8)"
                                 placeholder="请在此输入绘画提示词，系统会自动翻译中文提示词，高手请直接输入英文提示词"/>
                     </div>
+
+                    <el-row class="text-info">
+                      <el-button class="generate-btn" size="small" @click="generatePrompt" color="#5865f2" :disabled="isGenerating">
+                        <i class="iconfont icon-chuangzuo"></i>
+                        <span>生成专业绘画指令</span>
+                      </el-button>
+                    </el-row>
 
                     <div class="param-line pt">
                       <div class="flex-row justify-between items-center">
@@ -293,7 +310,7 @@
                   <div class="text">请上传两张以上的图片，最多不超过五张，超过五张图片请使用图生图功能</div>
                   <div class="img-inline">
                     <div class="img-list-box">
-                      <div class="img-item" v-for="imgURL in imgList">
+                      <div class="img-item" v-for="imgURL in imgList" :key="imgURL">
                         <el-image :src="imgURL" fit="cover"/>
                         <el-button type="danger" :icon="Delete" @click="removeUploadImage(imgURL)" circle/>
                       </div>
@@ -312,7 +329,7 @@
                   <div class="text">请上传两张有脸部的图片，用左边图片的脸替换右边图片的脸</div>
                   <div class="img-inline">
                     <div class="img-list-box">
-                      <div class="img-item" v-for="imgURL in imgList">
+                      <div class="img-item" v-for="imgURL in imgList" :key="imgURL">
                         <el-image :src="imgURL" fit="cover"/>
                         <el-button type="danger" :icon="Delete" @click="removeUploadImage(imgURL)" circle/>
                       </div>
@@ -602,19 +619,20 @@
 </template>
 
 <script setup>
-import {onMounted, onUnmounted, ref} from "vue"
+import {nextTick, onMounted, onUnmounted, ref} from "vue"
 import {ChromeFilled, Delete, DocumentCopy, InfoFilled, Picture, Plus, UploadFilled} from "@element-plus/icons-vue";
 import Compressor from "compressorjs";
 import {httpGet, httpPost} from "@/utils/http";
 import {ElMessage, ElMessageBox, ElNotification} from "element-plus";
 import Clipboard from "clipboard";
-import {checkSession, getSystemInfo} from "@/store/cache";
+import {checkSession, getClientId, getSystemInfo} from "@/store/cache";
 import {useRouter} from "vue-router";
 import {getSessionId} from "@/store/session";
 import {copyObj, removeArrayItem} from "@/utils/libs";
 import {useSharedStore} from "@/store/sharedata";
 import TaskList from "@/components/TaskList.vue";
 import BackTop from "@/components/BackTop.vue";
+import {showMessageError} from "@/utils/dialog";
 
 const listBoxHeight = ref(0)
 const paramBoxHeight = ref(0)
@@ -644,10 +662,10 @@ const rates = [
   {css: "size9-16", value: "9:16", text: "9:16", img: "/images/mj/rate_9_16.png"},
 ]
 const models = [
-  {text: "写实模式MJ-6.0", value: " --v 6", img: "/images/mj/mj-v6.png"},
-  {text: "优质模式MJ-5.2", value: " --v 5.2", img: "/images/mj/mj-v5.2.png"},
-  {text: "优质模式MJ-5.1", value: " --v 5.1", img: "/images/mj/mj-v5.1.jpg"},
-  {text: "虚幻模式MJ-5", value: " --v 5", img: "/images/mj/mj-v5.jpg"},
+  {text: "写实模式MJ-6.1", value: " --v 6.1", img: "/images/mj/mj-v6.png"},
+  {text: "优质模式MJ-6.0", value: " --v 6", img: "/images/mj/mj-v5.2.png"},
+  {text: "优质模式MJ-5.2", value: " --v 5.2", img: "/images/mj/mj-v5.1.jpg"},
+  {text: "虚幻模式MJ-5.1", value: " --v 5.1", img: "/images/mj/mj-v5.jpg"},
   {text: "真实模式MJ-4", value: " --v 4", img: "/images/mj/mj-v4.jpg"},
   {text: "动漫风-niji4", value: " --niji 4", img: "/images/mj/nj4.jpg"},
   {text: "动漫风-niji5", value: " --niji 5", img: "/images/mj/mj-niji.png"},
@@ -678,6 +696,7 @@ const options = [
 
 const router = useRouter()
 const initParams = {
+  client_id: getClientId(),
   task_type: "image",
   rate: rates[0].value,
   model: models[0].value,
@@ -704,65 +723,9 @@ const activeName = ref('txt2img')
 const runningJobs = ref([])
 const finishedJobs = ref([])
 
-const socket = ref(null)
 const power = ref(0)
 const userId = ref(0)
 const isLogin = ref(false)
-
-const heartbeatHandle = ref(null)
-const connect = () => {
-  let host = process.env.VUE_APP_WS_HOST
-  if (host === '') {
-    if (location.protocol === 'https:') {
-      host = 'wss://' + location.host;
-    } else {
-      host = 'ws://' + location.host;
-    }
-  }
-
-  // 心跳函数
-  const sendHeartbeat = () => {
-    clearTimeout(heartbeatHandle.value)
-    new Promise((resolve, reject) => {
-      if (socket.value !== null) {
-        socket.value.send(JSON.stringify({type: "heartbeat", content: "ping"}))
-      }
-      resolve("success")
-    }).then(() => {
-      heartbeatHandle.value = setTimeout(() => sendHeartbeat(), 5000)
-    });
-  }
-
-  const _socket = new WebSocket(host + `/api/mj/client?user_id=${userId.value}`);
-  _socket.addEventListener('open', () => {
-    socket.value = _socket;
-
-    // 发送心跳消息
-    sendHeartbeat()
-  });
-
-  _socket.addEventListener('message', event => {
-    if (event.data instanceof Blob) {
-      const reader = new FileReader();
-      reader.readAsText(event.data, "UTF-8")
-      reader.onload = () => {
-        const message = String(reader.result)
-        if (message === "FINISH" || message === "FAIL") {
-          page.value = 0
-          isOver.value = false
-          fetchFinishJobs(page.value)
-        }
-        fetchRunningJobs()
-      }
-    }
-  });
-
-  _socket.addEventListener('close', () => {
-    if (socket.value !== null) {
-      connect()
-    }
-  });
-}
 
 const clipboard = ref(null)
 onMounted(() => {
@@ -775,14 +738,25 @@ onMounted(() => {
   clipboard.value.on('error', () => {
     ElMessage.error('复制失败！');
   })
+
+  store.addMessageHandler("mj",(data) => {
+    // 丢弃无关消息
+    if (data.channel !== "mj" || data.clientId !== getClientId()) {
+      return
+    }
+
+    if (data.body === "FINISH" || data.body === "FAIL") {
+      page.value = 0
+      isOver.value = false
+      fetchFinishJobs()
+    }
+    nextTick(() => fetchRunningJobs())
+  })
 })
 
 onUnmounted(() => {
   clipboard.value.destroy()
-  if (socket.value !== null) {
-    socket.value.close()
-    socket.value = null
-  }
+  store.removeMessageHandler("mj")
 })
 
 // 初始化数据
@@ -794,7 +768,6 @@ const initData = () => {
     page.value = 0
     fetchRunningJobs()
     fetchFinishJobs()
-    connect()
   }).catch(() => {
 
   });
@@ -816,7 +789,7 @@ const fetchRunningJobs = () => {
   }
 
   httpGet(`/api/mj/jobs?finish=false`).then(res => {
-    const jobs = res.data
+    const jobs = res.data.items
     const _jobs = []
     for (let i = 0; i < jobs.length; i++) {
       if (jobs[i].progress === 101) {
@@ -853,7 +826,7 @@ const fetchFinishJobs = () => {
   page.value = page.value + 1
   // 获取已完成的任务
   httpGet(`/api/mj/jobs?finish=true&page=${page.value}&page_size=${pageSize.value}`).then(res => {
-    const jobs = res.data
+    const jobs = res.data.items
     for (let i = 0; i < jobs.length; i++) {
       if (jobs[i]['img_url'] !== "") {
         if (jobs[i].type === 'upscale' || jobs[i].type === 'swapFace') {
@@ -865,7 +838,7 @@ const fetchFinishJobs = () => {
         jobs[i]['thumb_url'] = '/images/img-placeholder.jpg'
       }
 
-      if ((jobs[i].type === 'image' || jobs[i].type === 'variation') && jobs[i].progress === 100) {
+      if (jobs[i].type !== 'upscale' && jobs[i].progress === 100){
         jobs[i]['can_opt'] = true
       }
     }
@@ -952,6 +925,7 @@ const generate = () => {
   httpPost("/api/mj/image", params.value).then(() => {
     ElMessage.success("绘画任务推送成功，请耐心等待任务执行...")
     power.value -= mjPower.value
+    fetchRunningJobs()
   }).catch(e => {
     ElMessage.error("任务推送失败：" + e.message)
   })
@@ -970,6 +944,7 @@ const variation = (index, item) => {
 const send = (url, index, item) => {
   httpPost(url, {
     index: index,
+    client_id: getClientId(),
     channel_id: item.channel_id,
     message_id: item.message_id,
     message_hash: item.hash,
@@ -978,6 +953,7 @@ const send = (url, index, item) => {
   }).then(() => {
     ElMessage.success("任务推送成功，请耐心等待任务执行...")
     power.value -= mjActionPower.value
+    fetchRunningJobs()
   }).catch(e => {
     ElMessage.error("任务推送失败：" + e.message)
   })
@@ -1039,6 +1015,21 @@ const tabChange = (tab) => {
 // 删除已上传图片
 const removeUploadImage = (url) => {
   imgList.value = removeArrayItem(imgList.value, url)
+}
+
+const isGenerating = ref(false)
+const generatePrompt = () => {
+  if (params.value.prompt === "") {
+    return showMessageError("请输入原始提示词")
+  }
+  isGenerating.value = true
+  httpPost("/api/prompt/image", {prompt: params.value.prompt}).then(res => {
+    params.value.prompt = res.data
+    isGenerating.value = false
+  }).catch(e => {
+    showMessageError("生成提示词失败："+e.message)
+    isGenerating.value = false
+  })
 }
 
 </script>

@@ -17,6 +17,7 @@ import (
 	"geekai/store/vo"
 	"geekai/utils"
 	"geekai/utils/resp"
+	"github.com/go-redis/redis/v8"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -26,10 +27,11 @@ import (
 type UserHandler struct {
 	handler.BaseHandler
 	licenseService *service.LicenseService
+	redis          *redis.Client
 }
 
-func NewUserHandler(app *core.AppServer, db *gorm.DB, licenseService *service.LicenseService) *UserHandler {
-	return &UserHandler{BaseHandler: handler.BaseHandler{App: app, DB: db}, licenseService: licenseService}
+func NewUserHandler(app *core.AppServer, db *gorm.DB, licenseService *service.LicenseService, redisCli *redis.Client) *UserHandler {
+	return &UserHandler{BaseHandler: handler.BaseHandler{App: app, DB: db}, licenseService: licenseService, redis: redisCli}
 }
 
 // List 用户列表
@@ -49,7 +51,7 @@ func (h *UserHandler) List(c *gin.Context) {
 	}
 
 	session.Model(&model.User{}).Count(&total)
-	res := session.Offset(offset).Limit(pageSize).Find(&items)
+	res := session.Offset(offset).Limit(pageSize).Order("id DESC").Find(&items)
 	if res.Error == nil {
 		for _, item := range items {
 			var user vo.User
@@ -73,6 +75,8 @@ func (h *UserHandler) Save(c *gin.Context) {
 		Id          uint     `json:"id"`
 		Password    string   `json:"password"`
 		Username    string   `json:"username"`
+		Mobile      string   `json:"mobile"`
+		Email       string   `json:"email"`
 		ChatRoles   []string `json:"chat_roles"`
 		ChatModels  []int    `json:"chat_models"`
 		ExpiredTime string   `json:"expired_time"`
@@ -102,6 +106,8 @@ func (h *UserHandler) Save(c *gin.Context) {
 		}
 		var oldPower = user.Power
 		user.Username = data.Username
+		user.Email = data.Email
+		user.Mobile = data.Mobile
 		user.Status = data.Status
 		user.Vip = data.Vip
 		user.Power = data.Power
@@ -109,7 +115,8 @@ func (h *UserHandler) Save(c *gin.Context) {
 		user.ChatModels = utils.JsonEncode(data.ChatModels)
 		user.ExpiredTime = utils.Str2stamp(data.ExpiredTime)
 
-		res = h.DB.Select("username", "status", "vip", "power", "chat_roles_json", "chat_models_json", "expired_time").Updates(&user)
+		res = h.DB.Select("username", "mobile", "email", "status", "vip", "power", "chat_roles_json", "chat_models_json", "expired_time").Updates(&user)
+
 		if res.Error != nil {
 			logger.Error("error with update database：", res.Error)
 			resp.ERROR(c, res.Error.Error())
@@ -135,6 +142,13 @@ func (h *UserHandler) Save(c *gin.Context) {
 				CreatedAt: time.Now(),
 			})
 		}
+		// 如果禁用了用户，则将用户踢下线
+		if user.Status == false {
+			key := fmt.Sprintf("users/%v", user.Id)
+			if _, err := h.redis.Del(c, key).Result(); err != nil {
+				logger.Error("error with delete session: ", err)
+			}
+		}
 	} else {
 		// 检查用户是否已经存在
 		h.DB.Where("username", data.Username).First(&user)
@@ -147,6 +161,8 @@ func (h *UserHandler) Save(c *gin.Context) {
 		u := model.User{
 			Username:    data.Username,
 			Password:    utils.GenPassword(data.Password, salt),
+			Mobile:      data.Mobile,
+			Email:       data.Email,
 			Avatar:      "/images/avatar/user.png",
 			Salt:        salt,
 			Power:       data.Power,
@@ -204,33 +220,69 @@ func (h *UserHandler) ResetPass(c *gin.Context) {
 }
 
 func (h *UserHandler) Remove(c *gin.Context) {
-	id := h.GetInt(c, "id", 0)
-	if id <= 0 {
+	id := c.Query("id")
+	ids := c.QueryArray("ids[]")
+	if id != "" {
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
 		resp.ERROR(c, types.InvalidArgs)
 		return
 	}
-	// 删除用户
-	res := h.DB.Where("id = ?", id).Delete(&model.User{})
-	if res.Error != nil {
-		resp.ERROR(c, "删除失败")
+
+	tx := h.DB.Begin()
+	var err error
+	for _, id = range ids {
+		// 删除用户
+		if err = tx.Where("id", id).Delete(&model.User{}).Error; err != nil {
+			break
+		}
+		// 删除聊天记录
+		if err = tx.Unscoped().Where("user_id = ?", id).Delete(&model.ChatItem{}).Error; err != nil {
+			break
+		}
+		// 删除聊天历史记录
+		if err = tx.Unscoped().Where("user_id = ?", id).Delete(&model.ChatMessage{}).Error; err != nil {
+			break
+		}
+		// 删除登录日志
+		if err = tx.Where("user_id = ?", id).Delete(&model.UserLoginLog{}).Error; err != nil {
+			break
+		}
+		// 删除算力日志
+		if err = tx.Where("user_id = ?", id).Delete(&model.PowerLog{}).Error; err != nil {
+			break
+		}
+		if err = tx.Where("user_id = ?", id).Delete(&model.InviteLog{}).Error; err != nil {
+			break
+		}
+		// 删除众筹日志
+		if err = tx.Where("user_id = ?", id).Delete(&model.Redeem{}).Error; err != nil {
+			break
+		}
+		// 删除绘图任务
+		if err = tx.Where("user_id = ?", id).Delete(&model.MidJourneyJob{}).Error; err != nil {
+			break
+		}
+		if err = tx.Where("user_id = ?", id).Delete(&model.SdJob{}).Error; err != nil {
+			break
+		}
+		if err = tx.Where("user_id = ?", id).Delete(&model.DallJob{}).Error; err != nil {
+			break
+		}
+		if err = tx.Where("user_id = ?", id).Delete(&model.SunoJob{}).Error; err != nil {
+			break
+		}
+		if err = tx.Where("user_id = ?", id).Delete(&model.VideoJob{}).Error; err != nil {
+			break
+		}
+	}
+	if err != nil {
+		resp.ERROR(c, err.Error())
+		tx.Rollback()
 		return
 	}
-
-	// 删除聊天记录
-	h.DB.Where("user_id = ?", id).Delete(&model.ChatItem{})
-	// 删除聊天历史记录
-	h.DB.Where("user_id = ?", id).Delete(&model.ChatMessage{})
-	// 删除登录日志
-	h.DB.Where("user_id = ?", id).Delete(&model.UserLoginLog{})
-	// 删除算力日志
-	h.DB.Where("user_id = ?", id).Delete(&model.PowerLog{})
-	// 删除众筹日志
-	h.DB.Where("user_id = ?", id).Delete(&model.Redeem{})
-	// 删除绘图任务
-	h.DB.Where("user_id = ?", id).Delete(&model.MidJourneyJob{})
-	h.DB.Where("user_id = ?", id).Delete(&model.SdJob{})
-	//  删除订单
-	h.DB.Where("user_id = ?", id).Delete(&model.Order{})
+	tx.Commit()
 	resp.SUCCESS(c)
 }
 

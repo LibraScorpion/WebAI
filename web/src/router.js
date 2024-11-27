@@ -27,6 +27,12 @@ const routes = [
                 component: () => import('@/views/ChatPlus.vue'),
             },
             {
+                name: 'chat-id',
+                path: '/chat/:id',
+                meta: {title: '创作中心'},
+                component: () => import('@/views/ChatPlus.vue'),
+            },
+            {
                 name: 'image-mj',
                 path: '/mj',
                 meta: {title: 'MidJourney 绘画中心'},
@@ -97,6 +103,12 @@ const routes = [
                 meta: {title: 'Suno音乐播放'},
                 component: () => import('@/views/Song.vue'),
             },
+            {
+                name: 'luma',
+                path: '/luma',
+                meta: {title: 'Luma视频创作'},
+                component: () => import('@/views/Luma.vue'),
+            },
         ]
     },
     {
@@ -127,8 +139,14 @@ const routes = [
     {
         path: '/admin/login',
         name: 'admin-login',
-        meta: {title: 'Geek-AI 控制台登录'},
+        meta: {title: '控制台登录'},
         component: () => import('@/views/admin/Login.vue'),
+    },
+    {
+        path: '/payReturn',
+        name: 'pay-return',
+        meta: {title: '支付回调'},
+        component: () => import('@/views/PayReturn.vue'),
     },
     {
         name: 'admin',
@@ -158,8 +176,14 @@ const routes = [
             {
                 path: '/admin/app',
                 name: 'admin-app',
-                meta: {title: '应用管理'},
+                meta: {title: '应用列表'},
                 component: () => import('@/views/admin/Apps.vue'),
+            },
+            {
+                path: '/admin/app/type',
+                name: 'admin-app-type',
+                meta: {title: '应用分类'},
+                component: () => import('@/views/admin/AppType.vue'),
             },
             {
                 path: '/admin/apikey',
@@ -210,6 +234,18 @@ const routes = [
                 component: () => import('@/views/admin/ChatList.vue'),
             },
             {
+                path: '/admin/images',
+                name: 'admin-images',
+                meta: {title: '绘图管理'},
+                component: () => import('@/views/admin/ImageList.vue'),
+            },
+            {
+                path: '/admin/medias',
+                name: 'admin-medias',
+                meta: {title: '音视频管理'},
+                component: () => import('@/views/admin/Medias.vue'),
+            },
+            {
                 path: '/admin/powerLog',
                 name: 'admin-power-log',
                 meta: {title: '算力日志'},
@@ -226,9 +262,21 @@ const routes = [
 
 
     {
+        name: 'mobile-login',
+        path: '/mobile/login',
+        meta: {title: '用户登录'},
+        component: () => import('@/views/Login.vue'),
+    },
+    {
+        name: 'mobile-register',
+        path: '/mobile/register',
+        meta: {title: '用户注册'},
+        component: () => import('@/views/Register.vue'),
+    },
+    {
         name: 'mobile',
         path: '/mobile',
-        meta: {title: 'Geek-AI v4.0'},
+        meta: {title: '首页'},
         component: () => import('@/views/mobile/Home.vue'),
         redirect: '/mobile/index',
         children: [
@@ -275,6 +323,12 @@ const routes = [
         path: '/test',
         meta: {title: '测试页面'},
         component: () => import('@/views/Test.vue'),
+    },
+    {
+        name: 'test2',
+        path: '/test2',
+        meta: {title: '测试页面'},
+        component: () => import('@/views/RealtimeTest.vue'),
     },
     {
         name: 'NotFound',

@@ -34,17 +34,21 @@ type Service struct {
 	uploadManager *oss.UploaderManager
 	taskQueue     *store.RedisQueue
 	notifyQueue   *store.RedisQueue
-	Clients       *types.LMap[uint, *types.WsClient] // UserId => Client
+	wsService     *service.WebsocketService
+	clientIds     map[string]string
+	userService   *service.UserService
 }
 
-func NewService(db *gorm.DB, manager *oss.UploaderManager, redisCli *redis.Client) *Service {
+func NewService(db *gorm.DB, manager *oss.UploaderManager, redisCli *redis.Client, wsService *service.WebsocketService, userService *service.UserService) *Service {
 	return &Service{
 		httpClient:    req.C().SetTimeout(time.Minute * 3),
 		db:            db,
 		taskQueue:     store.NewRedisQueue("Suno_Task_Queue", redisCli),
 		notifyQueue:   store.NewRedisQueue("Suno_Notify_Queue", redisCli),
-		Clients:       types.NewLMap[uint, *types.WsClient](),
 		uploadManager: manager,
+		wsService:     wsService,
+		clientIds:     map[string]string{},
+		userService:   userService,
 	}
 }
 
@@ -56,22 +60,17 @@ func (s *Service) PushTask(task types.SunoTask) {
 func (s *Service) Run() {
 	// 将数据库中未提交的人物加载到队列
 	var jobs []model.SunoJob
-	s.db.Where("task_id", "").Find(&jobs)
+	s.db.Where("task_id", "").Where("progress", 0).Find(&jobs)
 	for _, v := range jobs {
-		s.PushTask(types.SunoTask{
-			Id:           v.Id,
-			Channel:      v.Channel,
-			UserId:       v.UserId,
-			Type:         v.Type,
-			Title:        v.Title,
-			RefTaskId:    v.RefTaskId,
-			RefSongId:    v.RefSongId,
-			Prompt:       v.Prompt,
-			Tags:         v.Tags,
-			Model:        v.ModelName,
-			Instrumental: v.Instrumental,
-			ExtendSecs:   v.ExtendSecs,
-		})
+		var task types.SunoTask
+		err := utils.JsonDecode(v.TaskInfo, &task)
+		if err != nil {
+			logger.Errorf("decode task info with error: %v", err)
+			continue
+		}
+		task.Id = v.Id
+		s.PushTask(task)
+		s.clientIds[v.TaskId] = task.ClientId
 	}
 	logger.Info("Starting Suno job consumer...")
 	go func() {
@@ -82,14 +81,21 @@ func (s *Service) Run() {
 				logger.Errorf("taking task with error: %v", err)
 				continue
 			}
-
-			r, err := s.Create(task)
+			var r RespVo
+			if task.Type == 3 && task.SongId != "" { // 歌曲拼接
+				r, err = s.Merge(task)
+			} else if task.Type == 4 && task.AudioURL != "" { // 上传歌曲
+				r, err = s.Upload(task)
+			} else { // 歌曲创作
+				r, err = s.Create(task)
+			}
 			if err != nil {
 				logger.Errorf("create task with error: %v", err)
 				s.db.Model(&model.SunoJob{Id: task.Id}).UpdateColumns(map[string]interface{}{
 					"err_msg":  err.Error(),
 					"progress": service.FailTaskProgress,
 				})
+				s.notifyQueue.RPush(service.NotifyMessage{ClientId: task.ClientId, UserId: task.UserId, JobId: int(task.Id), Message: service.TaskStatusFailed})
 				continue
 			}
 
@@ -98,6 +104,7 @@ func (s *Service) Run() {
 				"task_id": r.Data,
 				"channel": r.Channel,
 			})
+			s.clientIds[r.Data] = task.ClientId
 		}
 	}()
 }
@@ -138,7 +145,7 @@ func (s *Service) Create(task types.SunoTask) (RespVo, error) {
 	}
 
 	var res RespVo
-	apiURL := fmt.Sprintf("%s/task/suno/v1/submit/music", apiKey.ApiURL)
+	apiURL := fmt.Sprintf("%s/suno/submit/music", apiKey.ApiURL)
 	logger.Debugf("API URL: %s, request body: %+v", apiURL, reqBody)
 	r, err := req.C().R().
 		SetHeader("Authorization", "Bearer "+apiKey.Value).
@@ -146,6 +153,97 @@ func (s *Service) Create(task types.SunoTask) (RespVo, error) {
 		Post(apiURL)
 	if err != nil {
 		return RespVo{}, fmt.Errorf("请求 API 出错：%v", err)
+	}
+
+	body, _ := io.ReadAll(r.Body)
+	err = json.Unmarshal(body, &res)
+	if err != nil {
+		return RespVo{}, fmt.Errorf("解析API数据失败：%v, %s", err, string(body))
+	}
+
+	if res.Code != "success" {
+		return RespVo{}, fmt.Errorf("API 返回失败：%s", res.Message)
+	}
+	// update the last_use_at for api key
+	apiKey.LastUsedAt = time.Now().Unix()
+	session.Updates(&apiKey)
+	res.Channel = apiKey.ApiURL
+	return res, nil
+}
+
+func (s *Service) Merge(task types.SunoTask) (RespVo, error) {
+	// 读取 API KEY
+	var apiKey model.ApiKey
+	session := s.db.Session(&gorm.Session{}).Where("type", "suno").Where("enabled", true)
+	if task.Channel != "" {
+		session = session.Where("api_url", task.Channel)
+	}
+	tx := session.Order("last_used_at DESC").First(&apiKey)
+	if tx.Error != nil {
+		return RespVo{}, errors.New("no available API KEY for Suno")
+	}
+
+	reqBody := map[string]interface{}{
+		"clip_id":   task.SongId,
+		"is_infill": false,
+	}
+
+	var res RespVo
+	apiURL := fmt.Sprintf("%s/suno/submit/concat", apiKey.ApiURL)
+	logger.Debugf("API URL: %s, request body: %+v", apiURL, reqBody)
+	r, err := req.C().R().
+		SetHeader("Authorization", "Bearer "+apiKey.Value).
+		SetBody(reqBody).
+		Post(apiURL)
+	if err != nil {
+		return RespVo{}, fmt.Errorf("请求 API 出错：%v", err)
+	}
+
+	body, _ := io.ReadAll(r.Body)
+	err = json.Unmarshal(body, &res)
+	if err != nil {
+		return RespVo{}, fmt.Errorf("解析API数据失败：%v, %s", err, string(body))
+	}
+
+	if res.Code != "success" {
+		return RespVo{}, fmt.Errorf("API 返回失败：%s", res.Message)
+	}
+	// update the last_use_at for api key
+	apiKey.LastUsedAt = time.Now().Unix()
+	session.Updates(&apiKey)
+	res.Channel = apiKey.ApiURL
+	return res, nil
+}
+
+func (s *Service) Upload(task types.SunoTask) (RespVo, error) {
+	// 读取 API KEY
+	var apiKey model.ApiKey
+	session := s.db.Session(&gorm.Session{}).Where("type", "suno").Where("enabled", true)
+	if task.Channel != "" {
+		session = session.Where("api_url", task.Channel)
+	}
+	tx := session.Order("last_used_at DESC").First(&apiKey)
+	if tx.Error != nil {
+		return RespVo{}, errors.New("no available API KEY for Suno")
+	}
+
+	reqBody := map[string]interface{}{
+		"url": task.AudioURL,
+	}
+
+	var res RespVo
+	apiURL := fmt.Sprintf("%s/suno/uploads/audio-url", apiKey.ApiURL)
+	logger.Debugf("API URL: %s, request body: %+v", apiURL, reqBody)
+	r, err := req.C().R().
+		SetHeader("Authorization", "Bearer "+apiKey.Value).
+		SetBody(reqBody).
+		Post(apiURL)
+	if err != nil {
+		return RespVo{}, fmt.Errorf("请求 API 出错：%v", err)
+	}
+
+	if r.StatusCode != 200 {
+		return RespVo{}, fmt.Errorf("请求 API 出错：%d, %s", r.StatusCode, r.String())
 	}
 
 	body, _ := io.ReadAll(r.Body)
@@ -173,19 +271,19 @@ func (s *Service) CheckTaskNotify() {
 			if err != nil {
 				continue
 			}
-			client := s.Clients.Get(uint(message.UserId))
+			logger.Debugf("notify message: %+v", message)
+			logger.Debugf("client id: %+v", s.wsService.Clients)
+			client := s.wsService.Clients.Get(message.ClientId)
+			logger.Debugf("%+v", client)
 			if client == nil {
 				continue
 			}
-			err = client.Send([]byte(message.Message))
-			if err != nil {
-				continue
-			}
+			utils.SendChannelMsg(client, types.ChSuno, message.Message)
 		}
 	}()
 }
 
-func (s *Service) DownloadImages() {
+func (s *Service) DownloadFiles() {
 	go func() {
 		var items []model.SunoJob
 		for {
@@ -213,7 +311,7 @@ func (s *Service) DownloadImages() {
 				v.AudioURL = audioURL
 				v.Progress = 100
 				s.db.Updates(&v)
-				s.notifyQueue.RPush(service.NotifyMessage{UserId: v.UserId, JobId: int(v.Id), Message: service.TaskStatusFinished})
+				s.notifyQueue.RPush(service.NotifyMessage{ClientId: s.clientIds[v.TaskId], UserId: v.UserId, JobId: int(v.Id), Message: service.TaskStatusFinished})
 			}
 
 			time.Sleep(time.Second * 10)
@@ -279,15 +377,29 @@ func (s *Service) SyncTaskProgress() {
 						}
 					}
 					tx.Commit()
-
+					s.notifyQueue.RPush(service.NotifyMessage{ClientId: s.clientIds[job.TaskId], UserId: job.UserId, JobId: int(job.Id), Message: service.TaskStatusFinished})
 				} else if task.Data.FailReason != "" {
 					job.Progress = service.FailTaskProgress
 					job.ErrMsg = task.Data.FailReason
 					s.db.Updates(&job)
-					s.notifyQueue.RPush(service.NotifyMessage{UserId: job.UserId, JobId: int(job.Id), Message: service.TaskStatusFailed})
+					s.notifyQueue.RPush(service.NotifyMessage{ClientId: s.clientIds[job.TaskId], UserId: job.UserId, JobId: int(job.Id), Message: service.TaskStatusFailed})
 				}
 			}
 
+			// 找出失败的任务，并恢复其扣减算力
+			s.db.Where("progress", service.FailTaskProgress).Where("power > ?", 0).Find(&jobs)
+			for _, job := range jobs {
+				err := s.userService.IncreasePower(job.UserId, job.Power, model.PowerLog{
+					Type:   types.PowerRefund,
+					Model:  job.ModelName,
+					Remark: fmt.Sprintf("Suno 任务失败，退回算力。任务ID：%s，Err:%s", job.TaskId, job.ErrMsg),
+				})
+				if err != nil {
+					continue
+				}
+				// 更新任务状态
+				s.db.Model(&job).UpdateColumn("power", 0)
+			}
 			time.Sleep(time.Second * 10)
 		}
 	}()
@@ -331,15 +443,15 @@ type QueryRespVo struct {
 func (s *Service) QueryTask(taskId string, channel string) (QueryRespVo, error) {
 	// 读取 API KEY
 	var apiKey model.ApiKey
-	tx := s.db.Session(&gorm.Session{}).Where("type", "suno").
+	err := s.db.Session(&gorm.Session{}).Where("type", "suno").
 		Where("api_url", channel).
 		Where("enabled", true).
-		Order("last_used_at DESC").First(&apiKey)
-	if tx.Error != nil {
+		Order("last_used_at DESC").First(&apiKey).Error
+	if err != nil {
 		return QueryRespVo{}, errors.New("no available API KEY for Suno")
 	}
 
-	apiURL := fmt.Sprintf("%s/task/suno/v1/fetch/%s", apiKey.ApiURL, taskId)
+	apiURL := fmt.Sprintf("%s/suno/fetch/%s", apiKey.ApiURL, taskId)
 	var res QueryRespVo
 	r, err := req.C().R().SetHeader("Authorization", "Bearer "+apiKey.Value).Get(apiURL)
 

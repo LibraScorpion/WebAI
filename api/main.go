@@ -14,7 +14,6 @@ import (
 	"geekai/core/types"
 	"geekai/handler"
 	"geekai/handler/admin"
-	"geekai/handler/chatimpl"
 	logger2 "geekai/logger"
 	"geekai/service"
 	"geekai/service/dalle"
@@ -24,6 +23,7 @@ import (
 	"geekai/service/sd"
 	"geekai/service/sms"
 	"geekai/service/suno"
+	"geekai/service/video"
 	"geekai/store"
 	"io"
 	"log"
@@ -127,8 +127,8 @@ func main() {
 		// 创建控制器
 		fx.Provide(handler.NewChatRoleHandler),
 		fx.Provide(handler.NewUserHandler),
-		fx.Provide(chatimpl.NewChatHandler),
-		fx.Provide(handler.NewUploadHandler),
+		fx.Provide(handler.NewChatHandler),
+		fx.Provide(handler.NewNetHandler),
 		fx.Provide(handler.NewSmsHandler),
 		fx.Provide(handler.NewRedeemHandler),
 		fx.Provide(handler.NewCaptchaHandler),
@@ -145,7 +145,7 @@ func main() {
 		fx.Provide(admin.NewAdminHandler),
 		fx.Provide(admin.NewApiKeyHandler),
 		fx.Provide(admin.NewUserHandler),
-		fx.Provide(admin.NewChatRoleHandler),
+		fx.Provide(admin.NewChatAppHandler),
 		fx.Provide(admin.NewRedeemHandler),
 		fx.Provide(admin.NewDashboardHandler),
 		fx.Provide(admin.NewChatModelHandler),
@@ -199,9 +199,16 @@ func main() {
 			s.Run()
 			s.SyncTaskProgress()
 			s.CheckTaskNotify()
-			s.DownloadImages()
+			s.DownloadFiles()
 		}),
-
+		fx.Provide(video.NewService),
+		fx.Invoke(func(s *video.Service) {
+			s.Run()
+			s.SyncTaskProgress()
+			s.CheckTaskNotify()
+			s.DownloadFiles()
+		}),
+		fx.Provide(service.NewUserService),
 		fx.Provide(payment.NewAlipayService),
 		fx.Provide(payment.NewHuPiPay),
 		fx.Provide(payment.NewJPayService),
@@ -218,8 +225,9 @@ func main() {
 
 		// 注册路由
 		fx.Invoke(func(s *core.AppServer, h *handler.ChatRoleHandler) {
-			group := s.Engine.Group("/api/role/")
+			group := s.Engine.Group("/api/app/")
 			group.GET("list", h.List)
+			group.GET("list/user", h.ListByUser)
 			group.POST("update", h.UpdateRole)
 		}),
 		fx.Invoke(func(s *core.AppServer, h *handler.UserHandler) {
@@ -231,14 +239,14 @@ func main() {
 			group.GET("profile", h.Profile)
 			group.POST("profile/update", h.ProfileUpdate)
 			group.POST("password", h.UpdatePass)
-			group.POST("bind/username", h.BindUsername)
+			group.POST("bind/mobile", h.BindMobile)
+			group.POST("bind/email", h.BindEmail)
 			group.POST("resetPass", h.ResetPass)
 			group.GET("clogin", h.CLogin)
 			group.GET("clogin/callback", h.CLoginCallback)
 		}),
-		fx.Invoke(func(s *core.AppServer, h *chatimpl.ChatHandler) {
+		fx.Invoke(func(s *core.AppServer, h *handler.ChatHandler) {
 			group := s.Engine.Group("/api/chat/")
-			group.Any("new", h.ChatHandle)
 			group.GET("list", h.List)
 			group.GET("detail", h.Detail)
 			group.POST("update", h.Update)
@@ -248,10 +256,11 @@ func main() {
 			group.POST("tokens", h.Tokens)
 			group.GET("stop", h.StopGenerate)
 		}),
-		fx.Invoke(func(s *core.AppServer, h *handler.UploadHandler) {
+		fx.Invoke(func(s *core.AppServer, h *handler.NetHandler) {
 			s.Engine.POST("/api/upload", h.Upload)
 			s.Engine.POST("/api/upload/list", h.List)
 			s.Engine.GET("/api/upload/remove", h.Remove)
+			s.Engine.GET("/api/download", h.Download)
 		}),
 		fx.Invoke(func(s *core.AppServer, h *handler.SmsHandler) {
 			group := s.Engine.Group("/api/sms/")
@@ -270,7 +279,6 @@ func main() {
 		}),
 		fx.Invoke(func(s *core.AppServer, h *handler.MidJourneyHandler) {
 			group := s.Engine.Group("/api/mj/")
-			group.Any("client", h.Client)
 			group.POST("image", h.Image)
 			group.POST("upscale", h.Upscale)
 			group.POST("variation", h.Variation)
@@ -281,7 +289,6 @@ func main() {
 		}),
 		fx.Invoke(func(s *core.AppServer, h *handler.SdJobHandler) {
 			group := s.Engine.Group("/api/sd")
-			group.Any("client", h.Client)
 			group.POST("image", h.Image)
 			group.GET("jobs", h.JobList)
 			group.GET("imgWall", h.ImgWall)
@@ -296,11 +303,12 @@ func main() {
 
 		// 管理后台控制器
 		fx.Invoke(func(s *core.AppServer, h *admin.ConfigHandler) {
-			group := s.Engine.Group("/api/admin/")
-			group.POST("config/update", h.Update)
-			group.GET("config/get", h.Get)
+			group := s.Engine.Group("/api/admin/config")
+			group.POST("update", h.Update)
+			group.GET("get", h.Get)
 			group.POST("active", h.Active)
-			group.GET("config/get/license", h.GetLicense)
+			group.GET("fixData", h.FixData)
+			group.GET("license", h.GetLicense)
 		}),
 		fx.Invoke(func(s *core.AppServer, h *admin.ManagerHandler) {
 			group := s.Engine.Group("/api/admin/")
@@ -328,7 +336,7 @@ func main() {
 			group.GET("loginLog", h.LoginLog)
 			group.POST("resetPass", h.ResetPass)
 		}),
-		fx.Invoke(func(s *core.AppServer, h *admin.ChatRoleHandler) {
+		fx.Invoke(func(s *core.AppServer, h *admin.ChatAppHandler) {
 			group := s.Engine.Group("/api/admin/role/")
 			group.GET("list", h.List)
 			group.POST("save", h.Save)
@@ -341,7 +349,8 @@ func main() {
 			group.GET("list", h.List)
 			group.POST("create", h.Create)
 			group.POST("set", h.Set)
-			group.POST("remove", h.Remove)
+			group.GET("remove", h.Remove)
+			group.POST("export", h.Export)
 		}),
 		fx.Invoke(func(s *core.AppServer, h *admin.DashboardHandler) {
 			group := s.Engine.Group("/api/admin/dashboard/")
@@ -361,14 +370,12 @@ func main() {
 		}),
 		fx.Invoke(func(s *core.AppServer, h *handler.PaymentHandler) {
 			group := s.Engine.Group("/api/payment/")
-			group.GET("doPay", h.DoPay)
+			group.POST("doPay", h.Pay)
 			group.GET("payWays", h.GetPayWays)
-			group.POST("qrcode", h.PayQrcode)
-			group.POST("mobile", h.Mobile)
-			group.POST("alipay/notify", h.AlipayNotify)
-			group.POST("hupipay/notify", h.HuPiPayNotify)
-			group.POST("payjs/notify", h.PayJsNotify)
-			group.POST("wechat/notify", h.WechatPayNotify)
+			group.POST("notify/alipay", h.AlipayNotify)
+			group.GET("notify/geek", h.GeekPayNotify)
+			group.POST("notify/wechat", h.WechatPayNotify)
+			group.POST("notify/hupi", h.HuPiPayNotify)
 		}),
 		fx.Invoke(func(s *core.AppServer, h *admin.ProductHandler) {
 			group := s.Engine.Group("/api/admin/product/")
@@ -398,7 +405,7 @@ func main() {
 		fx.Invoke(func(s *core.AppServer, h *handler.InviteHandler) {
 			group := s.Engine.Group("/api/invite/")
 			group.GET("code", h.Code)
-			group.POST("list", h.List)
+			group.GET("list", h.List)
 			group.GET("hits", h.Hits)
 		}),
 
@@ -423,6 +430,7 @@ func main() {
 			group.POST("weibo", h.WeiBo)
 			group.POST("zaobao", h.ZaoBao)
 			group.POST("dalle3", h.Dall3)
+			group.GET("list", h.List)
 		}),
 		fx.Invoke(func(s *core.AppServer, h *admin.ChatHandler) {
 			group := s.Engine.Group("/api/admin/chat/")
@@ -456,13 +464,11 @@ func main() {
 		}),
 		fx.Provide(handler.NewMarkMapHandler),
 		fx.Invoke(func(s *core.AppServer, h *handler.MarkMapHandler) {
-			group := s.Engine.Group("/api/markMap/")
-			group.Any("client", h.Client)
+			s.Engine.POST("/api/markMap/gen", h.Generate)
 		}),
 		fx.Provide(handler.NewDallJobHandler),
 		fx.Invoke(func(s *core.AppServer, h *handler.DallJobHandler) {
 			group := s.Engine.Group("/api/dall")
-			group.Any("client", h.Client)
 			group.POST("image", h.Image)
 			group.GET("jobs", h.JobList)
 			group.GET("imgWall", h.ImgWall)
@@ -472,7 +478,6 @@ func main() {
 		fx.Provide(handler.NewSunoHandler),
 		fx.Invoke(func(s *core.AppServer, h *handler.SunoHandler) {
 			group := s.Engine.Group("/api/suno")
-			group.Any("client", h.Client)
 			group.POST("create", h.Create)
 			group.GET("list", h.List)
 			group.GET("remove", h.Remove)
@@ -480,18 +485,53 @@ func main() {
 			group.POST("update", h.Update)
 			group.GET("detail", h.Detail)
 			group.GET("play", h.Play)
-			group.POST("lyric", h.Lyric)
+		}),
+		fx.Provide(handler.NewVideoHandler),
+		fx.Invoke(func(s *core.AppServer, h *handler.VideoHandler) {
+			group := s.Engine.Group("/api/video")
+			group.POST("luma/create", h.LumaCreate)
+			group.GET("list", h.List)
+			group.GET("remove", h.Remove)
+			group.GET("publish", h.Publish)
+		}),
+		fx.Provide(admin.NewChatAppTypeHandler),
+		fx.Invoke(func(s *core.AppServer, h *admin.ChatAppTypeHandler) {
+			group := s.Engine.Group("/api/admin/app/type")
+			group.POST("save", h.Save)
+			group.GET("list", h.List)
+			group.GET("remove", h.Remove)
+			group.POST("enable", h.Enable)
+			group.POST("sort", h.Sort)
+		}),
+		fx.Provide(handler.NewChatAppTypeHandler),
+		fx.Invoke(func(s *core.AppServer, h *handler.ChatAppTypeHandler) {
+			group := s.Engine.Group("/api/app/type")
+			group.GET("list", h.List)
 		}),
 		fx.Provide(handler.NewTestHandler),
 		fx.Invoke(func(s *core.AppServer, h *handler.TestHandler) {
 			group := s.Engine.Group("/api/test")
 			group.Any("sse", h.PostTest, h.SseTest)
 		}),
+		fx.Provide(service.NewWebsocketService),
+		fx.Provide(handler.NewWebsocketHandler),
+		fx.Invoke(func(s *core.AppServer, h *handler.WebsocketHandler) {
+			s.Engine.Any("/api/ws", h.Client)
+		}),
+		fx.Provide(handler.NewPromptHandler),
+		fx.Invoke(func(s *core.AppServer, h *handler.PromptHandler) {
+			group := s.Engine.Group("/api/prompt")
+			group.POST("/lyric", h.Lyric)
+			group.POST("/image", h.Image)
+			group.POST("/video", h.Video)
+			group.POST("/meta", h.MetaPrompt)
+		}),
 		fx.Invoke(func(s *core.AppServer, db *gorm.DB) {
 			go func() {
 				err := s.Run(db)
 				if err != nil {
-					log.Fatal(err)
+					logger.Error(err)
+					os.Exit(0)
 				}
 			}()
 		}),
@@ -506,6 +546,25 @@ func main() {
 					return lc.OnStop(ctx)
 				},
 			})
+		}),
+		fx.Provide(admin.NewImageHandler),
+		fx.Invoke(func(s *core.AppServer, h *admin.ImageHandler) {
+			group := s.Engine.Group("/api/admin/image")
+			group.POST("/list/mj", h.MjList)
+			group.POST("/list/sd", h.SdList)
+			group.POST("/list/dall", h.DallList)
+			group.GET("/remove", h.Remove)
+		}),
+		fx.Provide(admin.NewMediaHandler),
+		fx.Invoke(func(s *core.AppServer, h *admin.MediaHandler) {
+			group := s.Engine.Group("/api/admin/media")
+			group.POST("/list/suno", h.SunoList)
+			group.POST("/list/luma", h.LumaList)
+			group.GET("/remove", h.Remove)
+		}),
+		fx.Provide(handler.NewRealtimeHandler),
+		fx.Invoke(func(s *core.AppServer, h *handler.RealtimeHandler) {
+			s.Engine.Any("/api/realtime", h.Connection)
 		}),
 	)
 	// 启动应用程序

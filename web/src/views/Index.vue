@@ -7,7 +7,7 @@
           :ellipsis="false"
       >
         <div class="menu-item">
-          <el-image :src="logo" alt="Geek-AI"/>
+          <el-image :src="logo" class="logo" alt="Geek-AI"/>
           <div class="title" :style="{color:theme.textColor}">{{ title }}</div>
         </div>
         <div class="menu-item">
@@ -40,7 +40,7 @@
 
       <div class="navs">
         <el-space wrap>
-          <div v-for="item in navs" class="nav-item">
+          <div v-for="item in navs" :key="item.url" class="nav-item">
             <el-button @click="router.push(item.url)" :color="theme.btnBgColor" :style="{color: theme.btnTextColor}" class="shadow" :dark="false">
               <i :class="'iconfont '+iconMap[item.url]"></i>
               <span>{{item.name}}</span>
@@ -61,13 +61,13 @@ import {useRouter} from "vue-router";
 import FooterBar from "@/components/FooterBar.vue";
 import {httpGet} from "@/utils/http";
 import {ElMessage} from "element-plus";
-import {isMobile} from "@/utils/libs";
 import {checkSession, getLicenseInfo, getSystemInfo} from "@/store/cache";
+import {isMobile} from "@/utils/libs";
 
 const router = useRouter()
 
 if (isMobile()) {
-  router.push("/mobile")
+  router.push("/mobile/index")
 }
 
 const title = ref("")
@@ -124,6 +124,7 @@ const iconMap =ref(
       "/apps": "icon-app",
       "/member": "icon-vip-user",
       "/invite": "icon-share",
+      "/luma": "icon-luma",
     }
 )
 const bgStyle = {}

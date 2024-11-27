@@ -33,7 +33,7 @@
                   {{ threeItem.title }}
                 </el-menu-item>
               </el-sub-menu>
-              <el-menu-item v-else :index="subItem.index">
+              <el-menu-item v-else :index="subItem.index" :key="subItem.index">
                 <i v-if="subItem.icon" :class="'iconfont icon-'+subItem.icon"></i>
                 {{ subItem.title }}
               </el-menu-item>
@@ -52,32 +52,28 @@
 </template>
 
 <script setup>
-import {computed, ref} from 'vue';
+import {computed, ref, watch} from 'vue';
 import {setMenuItems, useSidebarStore} from '@/store/sidebar';
 import {httpGet} from "@/utils/http";
 import {ElMessage} from "element-plus";
 import {useRoute} from "vue-router";
+import {useSharedStore} from "@/store/sharedata";
 
 const title = ref('')
 const logo = ref('')
 
 // 加载系统配置
 httpGet('/api/admin/config/get?key=system').then(res => {
-  title.value = res.data['admin_title']
-  logo.value = res.data['logo']
+  title.value = res.data.admin_title
+  logo.value = res.data.logo
 }).catch(e => {
   ElMessage.error("加载系统配置失败: " + e.message)
 })
-
-// eslint-disable-next-line no-undef
-const props = defineProps({
-  theme: String,
-});
-
-const theme = computed(() => {
-  return props.theme
+const store = useSharedStore()
+const theme = ref(store.adminTheme)
+watch(() => store.adminTheme, (val) => {
+  theme.value = val
 })
-
 const items = [
   {
     icon: 'home',
@@ -90,12 +86,22 @@ const items = [
     index: '/admin/user',
     title: '用户管理',
   },
-
   {
     icon: 'menu',
-    index: '/admin/app',
+    index: '1',
     title: '应用管理',
+    subs: [
+      {
+        index: '/admin/app',
+        title: '应用列表',
+      },
+      {
+        index: '/admin/app/type',
+        title: '应用分类',
+      },
+    ],
   },
+
   {
     icon: 'api-key',
     index: '/admin/apikey',
@@ -130,6 +136,16 @@ const items = [
     icon: 'prompt',
     index: '/admin/chats',
     title: '对话管理',
+  },
+  {
+    icon: 'image',
+    index: '/admin/images',
+    title: '绘图管理',
+  },
+  {
+    icon: 'mp3',
+    index: '/admin/medias',
+    title: '音视频管理',
   },
   {
     icon: 'role',

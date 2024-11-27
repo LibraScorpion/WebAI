@@ -20,10 +20,10 @@
       <div class="dialog-body">
         <slot></slot>
       </div>
-      <template #footer>
+      <template #footer v-if="!hideFooter">
         <div class="dialog-footer">
           <el-button @click="cancel">{{cancelText}}</el-button>
-          <el-button type="primary" @click="$emit('confirm')">{{confirmText}}</el-button>
+          <el-button type="primary" @click="$emit('confirm')" v-if="!hideConfirm">{{confirmText}}</el-button>
         </div>
       </template>
     </el-dialog>
@@ -40,8 +40,16 @@ const props = defineProps({
     default: 'Tips',
   },
   width: {
-    type: Number,
-    default: 500,
+    type: String,
+    default: 'auto',
+  },
+  hideFooter:{
+    type: Boolean,
+    default: false
+  },
+  hideConfirm:{
+    type: Boolean,
+    default: false
   },
   confirmText: {
     type: String,

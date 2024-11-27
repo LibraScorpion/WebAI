@@ -250,9 +250,18 @@
                     :autosize="{ minRows: 4, maxRows: 6 }"
                     type="textarea"
                     ref="promptRef"
-                    placeholder="请在此输入绘画提示词，系统会自动翻译中文提示词，高手请直接输入英文提示词"
+                    placeholder="请在此输入绘画提示词，您也可以点击下面的提示词助手生成绘画提示词"
+                    v-loading="isGenerating"
+                    style="--el-mask-color:rgba(100, 100, 100, 0.8)"
                 />
               </div>
+
+              <el-row class="text-info">
+                <el-button class="generate-btn" size="small" @click="generatePrompt" color="#5865f2" :disabled="isGenerating">
+                  <i class="iconfont icon-chuangzuo" style="margin-right: 5px"></i>
+                  <span>生成专业绘画指令</span>
+                </el-button>
+              </el-row>
 
               <div class="param-line pt">
                 <span>反向提示词：</span>
@@ -487,16 +496,17 @@
 
 <script setup>
 import {nextTick, onMounted, onUnmounted, ref} from "vue"
-import {Delete, DocumentCopy, InfoFilled, Orange, Picture} from "@element-plus/icons-vue";
+import {Delete, DocumentCopy, InfoFilled, Orange} from "@element-plus/icons-vue";
 import {httpGet, httpPost} from "@/utils/http";
-import {ElMessage, ElMessageBox, ElNotification} from "element-plus";
+import {ElMessage, ElMessageBox} from "element-plus";
 import Clipboard from "clipboard";
-import {checkSession, getSystemInfo} from "@/store/cache";
+import {checkSession, getClientId, getSystemInfo} from "@/store/cache";
 import {useRouter} from "vue-router";
 import {getSessionId} from "@/store/session";
 import {useSharedStore} from "@/store/sharedata";
 import TaskList from "@/components/TaskList.vue";
 import BackTop from "@/components/BackTop.vue";
+import {showMessageError} from "@/utils/dialog";
 
 const listBoxHeight = ref(0)
 // const paramBoxHeight = ref(0)
@@ -520,6 +530,7 @@ const samplers = ["Euler a", "DPM++ 2S a", "DPM++ 2M", "DPM++ SDE", "DPM++ 2M SD
 const schedulers = ["Automatic", "Karras", "Exponential", "Uniform"]
 const scaleAlg = ["Latent", "ESRGAN_4x", "R-ESRGAN 4x+", "SwinIR_4x", "LDSR"]
 const params = ref({
+  client_id: getClientId(),
   width: 1024,
   height: 1024,
   sampler: samplers[0],
@@ -547,47 +558,7 @@ if (_params) {
 const power = ref(0)
 const sdPower = ref(0) // 画一张 SD 图片消耗算力
 
-const socket = ref(null)
 const userId = ref(0)
-const heartbeatHandle = ref(null)
-const connect = () => {
-  let host = process.env.VUE_APP_WS_HOST
-  if (host === '') {
-    if (location.protocol === 'https:') {
-      host = 'wss://' + location.host;
-    } else {
-      host = 'ws://' + location.host;
-    }
-  }
-
-  const _socket = new WebSocket(host + `/api/sd/client?user_id=${userId.value}`);
-  _socket.addEventListener('open', () => {
-    socket.value = _socket;
-  });
-
-  _socket.addEventListener('message', event => {
-    if (event.data instanceof Blob) {
-      const reader = new FileReader();
-      reader.readAsText(event.data, "UTF-8")
-      reader.onload = () => {
-        const message = String(reader.result)
-        if (message === "FINISH" || message === "FAIL") {
-          page.value = 0
-          isOver.value = false
-          fetchFinishJobs()
-        }
-        nextTick(() => fetchRunningJobs())
-      }
-    }
-  });
-
-  _socket.addEventListener('close', () => {
-    if (socket.value !== null) {
-      connect()
-    }
-  })
-}
-
 const clipboard = ref(null)
 onMounted(() => {
   initData()
@@ -606,14 +577,26 @@ onMounted(() => {
   }).catch(e => {
     ElMessage.error("获取系统配置失败：" + e.message)
   })
+
+  store.addMessageHandler("sd",(data) => {
+    // 丢弃无关消息
+    if (data.channel !== "sd" || data.clientId !== getClientId()) {
+      return
+    }
+
+    if (data.body === "FINISH" || data.body === "FAIL") {
+      page.value = 0
+      isOver.value = false
+      fetchFinishJobs()
+    }
+    nextTick(() => fetchRunningJobs())
+  })
+
 })
 
 onUnmounted(() => {
   clipboard.value.destroy()
-  if (socket.value !== null) {
-    socket.value.close()
-    socket.value = null
-  }
+  store.removeMessageHandler("sd")
 })
 
 
@@ -625,7 +608,6 @@ const initData = () => {
     page.value = 0
     fetchRunningJobs()
     fetchFinishJobs()
-    connect()
   }).catch(() => {
   });
 }
@@ -637,7 +619,7 @@ const fetchRunningJobs = () => {
 
   // 获取运行中的任务
   httpGet(`/api/sd/jobs?finish=0`).then(res => {
-    runningJobs.value = res.data
+    runningJobs.value = res.data.items
   }).catch(e => {
     ElMessage.error("获取任务失败：" + e.message)
   })
@@ -655,10 +637,10 @@ const fetchFinishJobs = () => {
   page.value = page.value + 1
 
   httpGet(`/api/sd/jobs?finish=1&page=${page.value}&page_size=${pageSize.value}`).then(res => {
-    if (res.data.length < pageSize.value) {
+    if (res.data.items.length < pageSize.value) {
       isOver.value = true
     }
-    const imageList = res.data
+    const imageList = res.data.items
     for (let i = 0; i < imageList.length; i++) {
       imageList[i]["img_thumb"] = imageList[i]["img_url"] + "?imageView2/4/w/300/h/0/q/75"
     }
@@ -695,6 +677,7 @@ const generate = () => {
   httpPost("/api/sd/image", params.value).then(() => {
     ElMessage.success("绘画任务推送成功，请耐心等待任务执行...")
     power.value -= sdPower.value
+    fetchRunningJobs()
   }).catch(e => {
     ElMessage.error("任务推送失败：" + e.message)
   })
@@ -746,6 +729,21 @@ const publishImage = (item, action) => {
     item.publish = action
   }).catch(e => {
     ElMessage.error(text + "失败：" + e.message)
+  })
+}
+
+const isGenerating = ref(false)
+const generatePrompt = () => {
+  if (params.value.prompt === "") {
+    return showMessageError("请输入原始提示词")
+  }
+  isGenerating.value = true
+  httpPost("/api/prompt/image", {prompt: params.value.prompt}).then(res => {
+    params.value.prompt = res.data
+    isGenerating.value = false
+  }).catch(e => {
+    showMessageError("生成提示词失败："+e.message)
+    isGenerating.value = false
   })
 }
 

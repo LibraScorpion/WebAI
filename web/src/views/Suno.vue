@@ -5,6 +5,20 @@
         <el-tooltip effect="light" content="定义模式" placement="top">
           <black-switch  v-model:value="custom" size="large"  />
         </el-tooltip>
+        <el-tooltip effect="light" content="请上传6-60秒的原始音频，检测到人声的音频将仅设为私人音频。" placement="bottom-end">
+          <el-upload
+              class="avatar-uploader"
+              :auto-upload="true"
+              :show-file-list="false"
+              :http-request="uploadAudio"
+              accept=".wav,.mp3"
+          >
+          <el-button class="upload-music" color="#363030" round>
+            <i class="iconfont icon-upload"></i>
+            <span>上传音乐</span>
+          </el-button>
+          </el-upload>
+        </el-tooltip>
         <black-select v-model:value="data.model" :options="models" placeholder="请选择模型" style="width: 100px" />
       </div>
 
@@ -28,10 +42,10 @@
               </el-popover>
             </div>
             <div class="item"
-                 v-loading="generating"
+                 v-loading="isGenerating"
                  element-loading-text="正在生成歌词..."
                  element-loading-background="rgba(122, 122, 122, 0.8)">
-              <black-input v-model:value="data.lyrics" type="textarea" :rows="10" placeholder="请在这里输入你自己写的歌词..."/>
+              <black-input v-model:value="data.lyrics" type="textarea" :rows="10" :placeholder="promptPlaceholder"/>
               <button class="btn btn-lyric" @click="createLyric">生成歌词</button>
             </div>
           </div>
@@ -97,7 +111,7 @@
             </el-popover>
           </div>
           <div class="item">
-            <black-input v-model:value="data.prompt" type="textarea" :rows="10" placeholder="例如：一首关于鸟人的摇滚歌曲..."/>
+            <black-input v-model:value="data.prompt" type="textarea" :rows="10" placeholder="例如：一首关于爱情的摇滚歌曲..."/>
           </div>
         </div>
 
@@ -137,7 +151,7 @@
     </div>
     <div class="right-box" v-loading="loading" element-loading-background="rgba(100,100,100,0.3)">
       <div class="list-box" v-if="!noData">
-        <div v-for="item in list">
+        <div v-for="item in list" :key="item.id">
           <div class="item" v-if="item.progress === 100">
             <div class="left">
               <div class="container">
@@ -151,13 +165,18 @@
             <div class="center">
               <div class="title">
                 <a :href="'/song/'+item.song_id"  target="_blank">{{item.title}}</a>
-                <span class="model">{{item.major_model_version}}</span>
+                <span class="model" v-if="item.major_model_version">{{item.major_model_version}}</span>
+                <span class="model" v-if="item.type === 4">用户上传</span>
+                <span class="model" v-if="item.type === 3">
+                  <i class="iconfont icon-mp3"></i>
+                  完整歌曲
+                </span>
                 <span class="model" v-if="item.ref_song">
                     <i class="iconfont icon-link"></i>
                     {{item.ref_song.title}}
                   </span>
               </div>
-              <div class="tags">{{item.tags}}</div>
+              <div class="tags" v-if="item.tags">{{item.tags}}</div>
             </div>
             <div class="right">
               <div class="tools">
@@ -171,11 +190,16 @@
                 </button>
 
                 <el-tooltip effect="light" content="下载歌曲" placement="top">
-                  <a :href="item.audio_url" :download="item.title+'.mp3'" target="_blank">
-                    <button class="btn btn-icon">
-                      <i class="iconfont icon-download"></i>
-                    </button>
-                  </a>
+                  <button class="btn btn-icon" @click="download(item)">
+                    <i class="iconfont icon-download" v-if="!item.downloading"></i>
+                    <el-image src="/images/loading.gif" class="downloading" fit="cover" v-else />
+                  </button>
+                </el-tooltip>
+
+                <el-tooltip effect="light" content="获取完整歌曲" placement="top" v-if="item.ref_song">
+                  <button class="btn btn-icon" @click="merge(item)">
+                    <i class="iconfont icon-concat"></i>
+                  </button>
                 </el-tooltip>
 
                 <el-tooltip effect="light" content="复制歌曲链接" placement="top">
@@ -209,7 +233,7 @@
               <div class="failed" v-if="item.progress === 101">
                 {{item.err_msg}}
               </div>
-              <generating v-else />
+              <generating v-else message="正在生成歌曲" />
             </div>
             <div class="right">
               <el-button type="info" @click="removeJob(item)" circle>
@@ -242,7 +266,7 @@
       </div>
     </div>
 
-    <black-dialog v-model:show="showDialog" title="修改歌曲" @cancal="showDialog = false" @confirm="updateSong" :width="500">
+    <black-dialog v-model:show="showDialog" title="修改歌曲" @cancal="showDialog = false" @confirm="updateSong" :width="500+'px'">
       <form class="form">
         <div class="form-item">
           <div class="label">歌曲名称</div>
@@ -274,15 +298,16 @@ import BlackSwitch from "@/components/ui/BlackSwitch.vue";
 import BlackInput from "@/components/ui/BlackInput.vue";
 import MusicPlayer from "@/components/MusicPlayer.vue";
 import {compact} from "lodash";
-import {httpGet, httpPost} from "@/utils/http";
+import {httpDownload, httpGet, httpPost} from "@/utils/http";
 import {showMessageError, showMessageOK} from "@/utils/dialog";
-import Generating from "@/components/ui/Generating.vue";
-import {checkSession} from "@/store/cache";
+import {checkSession, getClientId} from "@/store/cache";
 import {ElMessage, ElMessageBox} from "element-plus";
-import {formatTime} from "@/utils/libs";
+import {formatTime, replaceImg} from "@/utils/libs";
 import Clipboard from "clipboard";
 import BlackDialog from "@/components/ui/BlackDialog.vue";
 import Compressor from "compressorjs";
+import Generating from "@/components/ui/Generating.vue";
+import {useSharedStore} from "@/store/sharedata";
 
 const winHeight = ref(window.innerHeight - 50)
 const custom = ref(false)
@@ -309,6 +334,7 @@ const tags = ref([
   {label: "嘻哈", value: "hip hop"},
 ])
 const data = ref({
+  client_id: getClientId(),
   model: "chirp-v3-0",
   tags: "",
   lyrics: "",
@@ -319,8 +345,8 @@ const data = ref({
   extend_secs: 0,
   ref_song_id: "",
 })
-const loading = ref(true)
-const noData = ref(false)
+const loading = ref(false)
+const noData = ref(true)
 const playList = ref([])
 const playerRef = ref(null)
 const showPlayer = ref(false)
@@ -329,45 +355,8 @@ const btnText = ref("开始创作")
 const refSong = ref(null)
 const showDialog = ref(false)
 const editData = ref({title:"",cover:"",id:0})
-
-const socket = ref(null)
-const userId = ref(0)
-const connect = () => {
-  let host = process.env.VUE_APP_WS_HOST
-  if (host === '') {
-    if (location.protocol === 'https:') {
-      host = 'wss://' + location.host;
-    } else {
-      host = 'ws://' + location.host;
-    }
-  }
-
-  const _socket = new WebSocket(host + `/api/suno/client?user_id=${userId.value}`);
-  _socket.addEventListener('open', () => {
-    socket.value = _socket;
-  });
-
-  _socket.addEventListener('message', event => {
-    if (event.data instanceof Blob) {
-      const reader = new FileReader();
-      reader.readAsText(event.data, "UTF-8")
-      reader.onload = () => {
-        const message = String(reader.result)
-        console.log(message)
-        if (message === "FINISH" || message === "FAIL") {
-          fetchData()
-        }
-      }
-    }
-  });
-
-  _socket.addEventListener('close', () => {
-    if (socket.value !== null) {
-      connect()
-    }
-  });
-}
-
+const promptPlaceholder = ref('请在这里输入你自己写的歌词...')
+const store = useSharedStore()
 const clipboard = ref(null)
 onMounted(() => {
   clipboard.value = new Clipboard('.copy-link');
@@ -379,15 +368,25 @@ onMounted(() => {
     ElMessage.error('复制失败！');
   })
 
-  checkSession().then(user => {
-    userId.value = user.id
-    connect()
+  checkSession().then(() => {
+    fetchData(1)
+  }).catch(() => {})
+
+  store.addMessageHandler("suno",(data) => {
+    // 丢弃无关消息
+    if (data.channel !== "suno" || data.clientId !== getClientId()) {
+      return
+    }
+
+    if (data.body === "FINISH" || data.body === "FAIL") {
+      fetchData(1)
+    }
   })
-  fetchData(1)
 })
 
 onUnmounted(() => {
   clipboard.value.destroy()
+  store.removeMessageHandler("suno")
 })
 
 const page = ref(1)
@@ -397,6 +396,7 @@ const fetchData = (_page) => {
   if (_page) {
     page.value = _page
   }
+  loading.value = true
   httpGet("/api/suno/list",{page:page.value, page_size:pageSize.value}).then(res => {
     total.value = res.data.total
     const items = []
@@ -422,7 +422,11 @@ const create = () => {
   data.value.ref_task_id = refSong.value ? refSong.value.task_id : ""
   data.value.ref_song_id = refSong.value ? refSong.value.song_id : ""
   data.value.extend_secs = refSong.value ? refSong.value.extend_secs : 0
-  if (custom.value) {
+  if (refSong.value) {
+    if (data.value.extend_secs > refSong.value.duration) {
+      return showMessageError("续写开始时间不能超过原歌曲长度")
+    }
+  } else if (custom.value) {
     if (data.value.lyrics === "") {
       return showMessageError("请输入歌词")
     }
@@ -434,9 +438,6 @@ const create = () => {
       return showMessageError("请输入歌曲描述")
     }
   }
-  if (refSong.value && data.value.extend_secs > refSong.value.duration) {
-    return showMessageError("续写开始时间不能超过原歌曲长度")
-  }
 
   httpPost("/api/suno/create", data.value).then(() => {
     fetchData(1)
@@ -446,6 +447,59 @@ const create = () => {
   })
 }
 
+// 拼接歌曲
+const merge = (item) => {
+  httpPost("/api/suno/create", {song_id: item.song_id, type:3}).then(() => {
+    fetchData(1)
+    showMessageOK("创建任务成功")
+  }).catch(e => {
+    showMessageError("合并歌曲失败："+e.message)
+  })
+}
+
+// 下载歌曲
+const download = (item) => {
+  const url = replaceImg(item.audio_url)
+  const downloadURL = `${process.env.VUE_APP_API_HOST}/api/download?url=${url}`
+  // parse filename
+  const urlObj = new URL(url);
+  const fileName = urlObj.pathname.split('/').pop();
+  item.downloading = true
+  httpDownload(downloadURL).then(response  => {
+    const blob = new Blob([response.data]);
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(link.href);
+    item.downloading = false
+  }).catch(() => {
+    showMessageError("下载失败")
+    item.downloading = false
+  })
+}
+
+const uploadAudio = (file) => {
+  const formData = new FormData();
+  formData.append('file', file.file, file.name);
+  // 执行上传操作
+  httpPost('/api/upload', formData).then((res) => {
+    httpPost("/api/suno/create", {audio_url: res.data.url, title:res.data.name, type:4}).then(() => {
+      fetchData(1)
+      showMessageOK("歌曲上传成功")
+    }).catch(e => {
+      showMessageError("歌曲上传失败："+e.message)
+    })
+    removeRefSong()
+    ElMessage.success({message: "上传成功", duration: 500})
+  }).catch((e) => {
+    ElMessage.error('文件传失败:' + e.message)
+  })
+};
+
+
 // 续写歌曲
 const extend = (item) => {
   refSong.value = item
@@ -453,6 +507,7 @@ const extend = (item) => {
   data.value.title = item.title
   custom.value = true
   btnText.value = "续写歌曲"
+  promptPlaceholder.value = "输入额外的歌词，根据您之前的歌词来扩展歌曲..."
 }
 
 // 更细歌曲
@@ -485,6 +540,7 @@ watch(() => custom.value, (newValue) => {
 const removeRefSong = () => {
   refSong.value = null
   btnText.value = "开始创作"
+  promptPlaceholder.value = "请在这里输入你自己写的歌词..."
 }
 
 const play = (item) => {
@@ -529,7 +585,7 @@ const publishJob = (item) => {
 }
 
 const getShareURL = (item) => {
-  return `${location.protocol}//${location.host}/song/${item.id}`
+  return `${location.protocol}//${location.host}/song/${item.song_id}`
 }
 
 const uploadCover = (file) => {
@@ -553,21 +609,21 @@ const uploadCover = (file) => {
   });
 }
 
-const generating = ref(false)
+const isGenerating = ref(false)
 const createLyric = () => {
   if (data.value.lyrics === "") {
     return showMessageError("请输入歌词描述")
   }
-  generating.value = true
-  httpPost("/api/suno/lyric", {prompt: data.value.lyrics}).then(res => {
+  isGenerating.value = true
+  httpPost("/api/prompt/lyric", {prompt: data.value.lyrics}).then(res => {
     const lines = res.data.split('\n');
     data.value.title = lines.shift().replace(/\*/g,"")
     lines.shift()
     data.value.lyrics = lines.join('\n');
-    generating.value = false
+    isGenerating.value = false
   }).catch(e => {
     showMessageError("歌词生成失败："+e.message)
-    generating.value = false
+    isGenerating.value = false
   })
 }
 

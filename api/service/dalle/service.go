@@ -34,17 +34,21 @@ type Service struct {
 	uploadManager *oss.UploaderManager
 	taskQueue     *store.RedisQueue
 	notifyQueue   *store.RedisQueue
-	Clients       *types.LMap[uint, *types.WsClient] // UserId => Client
+	userService   *service.UserService
+	wsService     *service.WebsocketService
+	clientIds     map[uint]string
 }
 
-func NewService(db *gorm.DB, manager *oss.UploaderManager, redisCli *redis.Client) *Service {
+func NewService(db *gorm.DB, manager *oss.UploaderManager, redisCli *redis.Client, userService *service.UserService, wsService *service.WebsocketService) *Service {
 	return &Service{
 		httpClient:    req.C().SetTimeout(time.Minute * 3),
 		db:            db,
 		taskQueue:     store.NewRedisQueue("DallE_Task_Queue", redisCli),
 		notifyQueue:   store.NewRedisQueue("DallE_Notify_Queue", redisCli),
-		Clients:       types.NewLMap[uint, *types.WsClient](),
+		wsService:     wsService,
 		uploadManager: manager,
+		userService:   userService,
+		clientIds:     map[uint]string{},
 	}
 }
 
@@ -55,6 +59,20 @@ func (s *Service) PushTask(task types.DallTask) {
 }
 
 func (s *Service) Run() {
+	// 将数据库中未提交的人物加载到队列
+	var jobs []model.DallJob
+	s.db.Where("progress", 0).Find(&jobs)
+	for _, v := range jobs {
+		var task types.DallTask
+		err := utils.JsonDecode(v.TaskInfo, &task)
+		if err != nil {
+			logger.Errorf("decode task info with error: %v", err)
+			continue
+		}
+		task.Id = v.Id
+		s.PushTask(task)
+	}
+
 	logger.Info("Starting DALL-E job consumer...")
 	go func() {
 		for {
@@ -65,14 +83,15 @@ func (s *Service) Run() {
 				continue
 			}
 			logger.Infof("handle a new DALL-E task: %+v", task)
+			s.clientIds[task.Id] = task.ClientId
 			_, err = s.Image(task, false)
 			if err != nil {
 				logger.Errorf("error with image task: %v", err)
-				s.db.Model(&model.DallJob{Id: task.JobId}).UpdateColumns(map[string]interface{}{
+				s.db.Model(&model.DallJob{Id: task.Id}).UpdateColumns(map[string]interface{}{
 					"progress": service.FailTaskProgress,
 					"err_msg":  err.Error(),
 				})
-				s.notifyQueue.RPush(service.NotifyMessage{UserId: int(task.UserId), JobId: int(task.JobId), Message: service.TaskStatusFailed})
+				s.notifyQueue.RPush(service.NotifyMessage{ClientId: task.ClientId, UserId: int(task.UserId), JobId: int(task.Id), Message: service.TaskStatusFailed})
 			}
 		}
 	}()
@@ -109,7 +128,7 @@ func (s *Service) Image(task types.DallTask, sync bool) (string, error) {
 	prompt := task.Prompt
 	// translate prompt
 	if utils.HasChinese(prompt) {
-		content, err := utils.OpenAIRequest(s.db, fmt.Sprintf(service.RewritePromptTemplate, prompt), "gpt-4o-mini")
+		content, err := utils.OpenAIRequest(s.db, fmt.Sprintf(service.TranslatePromptTemplate, prompt), task.TranslateModelId)
 		if err == nil {
 			prompt = content
 			logger.Debugf("重写后提示词：%s", prompt)
@@ -122,32 +141,23 @@ func (s *Service) Image(task types.DallTask, sync bool) (string, error) {
 		return "", errors.New("insufficient of power")
 	}
 
-	// 更新用户算力
-	tx := s.db.Model(&model.User{}).Where("id", user.Id).UpdateColumn("power", gorm.Expr("power - ?", task.Power))
-	// 记录算力变化日志
-	if tx.Error == nil && tx.RowsAffected > 0 {
-		var u model.User
-		s.db.Where("id", user.Id).First(&u)
-		s.db.Create(&model.PowerLog{
-			UserId:    user.Id,
-			Username:  user.Username,
-			Type:      types.PowerConsume,
-			Amount:    task.Power,
-			Balance:   u.Power,
-			Mark:      types.PowerSub,
-			Model:     "dall-e-3",
-			Remark:    fmt.Sprintf("绘画提示词：%s", utils.CutWords(task.Prompt, 10)),
-			CreatedAt: time.Now(),
-		})
+	// 扣减算力
+	err := s.userService.DecreasePower(int(user.Id), task.Power, model.PowerLog{
+		Type:   types.PowerConsume,
+		Model:  "dall-e-3",
+		Remark: fmt.Sprintf("绘画提示词：%s", utils.CutWords(task.Prompt, 10)),
+	})
+	if err != nil {
+		return "", fmt.Errorf("error with decrease power: %v", err)
 	}
 
 	// get image generation API KEY
 	var apiKey model.ApiKey
-	tx = s.db.Where("type", "dalle").
+	err = s.db.Where("type", "dalle").
 		Where("enabled", true).
-		Order("last_used_at ASC").First(&apiKey)
-	if tx.Error != nil {
-		return "", fmt.Errorf("no available DALL-E api key: %v", tx.Error)
+		Order("last_used_at ASC").First(&apiKey).Error
+	if err != nil {
+		return "", fmt.Errorf("no available DALL-E api key: %v", err)
 	}
 
 	var res imgRes
@@ -165,7 +175,7 @@ func (s *Service) Image(task types.DallTask, sync bool) (string, error) {
 		Quality: task.Quality,
 	}
 	logger.Infof("Channel:%s, API KEY:%s, BODY: %+v", apiURL, apiKey.Value, reqBody)
-	r, err := s.httpClient.R().SetHeader("Content-Type", "application/json").
+	r, err := s.httpClient.R().SetHeader("Body-Type", "application/json").
 		SetHeader("Authorization", "Bearer "+apiKey.Value).
 		SetBody(reqBody).
 		SetErrorResult(&errRes).
@@ -181,19 +191,19 @@ func (s *Service) Image(task types.DallTask, sync bool) (string, error) {
 	// update the api key last use time
 	s.db.Model(&apiKey).UpdateColumn("last_used_at", time.Now().Unix())
 	// update task progress
-	tx = s.db.Model(&model.DallJob{Id: task.JobId}).UpdateColumns(map[string]interface{}{
+	err = s.db.Model(&model.DallJob{Id: task.Id}).UpdateColumns(map[string]interface{}{
 		"progress": 100,
 		"org_url":  res.Data[0].Url,
 		"prompt":   prompt,
-	})
-	if tx.Error != nil {
-		return "", fmt.Errorf("err with update database: %v", tx.Error)
+	}).Error
+	if err != nil {
+		return "", fmt.Errorf("err with update database: %v", err)
 	}
 
-	s.notifyQueue.RPush(service.NotifyMessage{UserId: int(task.UserId), JobId: int(task.JobId), Message: service.TaskStatusFailed})
+	s.notifyQueue.RPush(service.NotifyMessage{ClientId: task.ClientId, UserId: int(task.UserId), JobId: int(task.Id), Message: service.TaskStatusFailed})
 	var content string
 	if sync {
-		imgURL, err := s.downloadImage(task.JobId, int(task.UserId), res.Data[0].Url)
+		imgURL, err := s.downloadImage(task.Id, int(task.UserId), res.Data[0].Url)
 		if err != nil {
 			return "", fmt.Errorf("error with download image: %v", err)
 		}
@@ -212,14 +222,13 @@ func (s *Service) CheckTaskNotify() {
 			if err != nil {
 				continue
 			}
-			client := s.Clients.Get(uint(message.UserId))
+
+			logger.Debugf("notify message: %+v", message)
+			client := s.wsService.Clients.Get(message.ClientId)
 			if client == nil {
 				continue
 			}
-			err = client.Send([]byte(message.Message))
-			if err != nil {
-				continue
-			}
+			utils.SendChannelMsg(client, types.ChDall, message.Message)
 		}
 	}()
 }
@@ -228,13 +237,9 @@ func (s *Service) CheckTaskStatus() {
 	go func() {
 		logger.Info("Running DALL-E task status checking ...")
 		for {
+			// 检查未完成任务进度
 			var jobs []model.DallJob
-			res := s.db.Where("progress < ?", 100).Find(&jobs)
-			if res.Error != nil {
-				time.Sleep(5 * time.Second)
-				continue
-			}
-
+			s.db.Where("progress < ?", 100).Find(&jobs)
 			for _, job := range jobs {
 				// 超时的任务标记为失败
 				if time.Now().Sub(job.CreatedAt) > time.Minute*10 {
@@ -242,6 +247,21 @@ func (s *Service) CheckTaskStatus() {
 					job.ErrMsg = "任务超时"
 					s.db.Updates(&job)
 				}
+			}
+
+			// 找出失败的任务，并恢复其扣减算力
+			s.db.Where("progress", service.FailTaskProgress).Where("power > ?", 0).Find(&jobs)
+			for _, job := range jobs {
+				err := s.userService.IncreasePower(int(job.UserId), job.Power, model.PowerLog{
+					Type:   types.PowerRefund,
+					Model:  "dall-e-3",
+					Remark: fmt.Sprintf("任务失败，退回算力。任务ID：%d，Err: %s", job.Id, job.ErrMsg),
+				})
+				if err != nil {
+					continue
+				}
+				// 更新任务状态
+				s.db.Model(&job).UpdateColumn("power", 0)
 			}
 			time.Sleep(time.Second * 10)
 		}
@@ -291,6 +311,6 @@ func (s *Service) downloadImage(jobId uint, userId int, orgURL string) (string, 
 	if res.Error != nil {
 		return "", err
 	}
-	s.notifyQueue.RPush(service.NotifyMessage{UserId: userId, JobId: int(jobId), Message: service.TaskStatusFinished})
+	s.notifyQueue.RPush(service.NotifyMessage{ClientId: s.clientIds[jobId], UserId: userId, JobId: int(jobId), Message: service.TaskStatusFinished})
 	return imgURL, nil
 }

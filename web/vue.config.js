@@ -14,12 +14,18 @@ module.exports = defineConfig({
         ]
     },
 
-    publicPath: process.env.NODE_ENV === 'production' ? '/' : '/',
+    publicPath: '/',
 
     outputDir: 'dist',
     crossorigin: "anonymous",
     devServer: {
-        allowedHosts: ['127.0.0.1:5678'],
+        allowedHosts: "all",
         port: 8888,
+        proxy: {
+            '/static/upload/': {
+              target:  process.env.VUE_APP_API_HOST,
+              changeOrigin: true,
+            }
+          }
     }
 })

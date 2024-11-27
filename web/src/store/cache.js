@@ -1,35 +1,21 @@
 import {httpGet} from "@/utils/http";
 import Storage from "good-storage";
-import {showMessageError} from "@/utils/dialog";
+import {randString} from "@/utils/libs";
 
 const userDataKey = "USER_INFO_CACHE_KEY"
 const adminDataKey = "ADMIN_INFO_CACHE_KEY"
 const systemInfoKey = "SYSTEM_INFO_CACHE_KEY"
 const licenseInfoKey = "LICENSE_INFO_CACHE_KEY"
 export function checkSession() {
-    const item = Storage.get(userDataKey) ?? {expire:0, data:null}
-    if (item.expire > Date.now()) {
-        return Promise.resolve(item.data)
-    }
-
     return new Promise((resolve, reject) => {
         httpGet('/api/user/session').then(res => {
-            item.data = res.data
-            // cache expires after 5 minutes
-            item.expire = Date.now() + 1000 * 60 * 5
-            Storage.set(userDataKey, item)
-            resolve(item.data)
-        }).catch(err => {
+            resolve(res.data)
+        }).catch(e => {
             Storage.remove(userDataKey)
-            reject(err)
+            reject(e)
         })
     })
 }
-
-export function removeUserInfo() {
-    Storage.remove(userDataKey)
-}
-
 export function checkAdminSession() {
     const item = Storage.get(adminDataKey) ?? {expire:0, data:null}
     if (item.expire > Date.now()) {
@@ -38,12 +24,12 @@ export function checkAdminSession() {
     return new Promise((resolve, reject) => {
         httpGet('/api/admin/session').then(res => {
             item.data = res.data
-            // cache expires after 10 minutes
-            item.expire = Date.now() + 1000 * 60 * 10
+            item.expire = Date.now() + 1000 * 30
             Storage.set(adminDataKey, item)
             resolve(item.data)
-        }).catch(err => {
-            reject(err)
+        }).catch(e => {
+            Storage.remove(adminDataKey)
+            reject(e)
         })
     })
 }
@@ -60,8 +46,7 @@ export function getSystemInfo() {
     return new Promise((resolve, reject) => {
         httpGet('/api/config/get?key=system').then(res => {
             item.data = res
-            // cache expires after 10 minutes
-            item.expire = Date.now() + 1000 * 60 * 10
+            item.expire = Date.now() + 1000 * 30
             Storage.set(systemInfoKey, item)
             resolve(item.data)
         }).catch(err => {
@@ -79,12 +64,21 @@ export function getLicenseInfo() {
     return new Promise((resolve, reject) => {
         httpGet('/api/config/license').then(res => {
             item.data = res
-            // cache expires after 10 minutes
-            item.expire = Date.now() + 1000 * 60 * 10
+            item.expire = Date.now() + 1000 * 30
             Storage.set(licenseInfoKey, item)
             resolve(item.data)
         }).catch(err => {
-            reject(err)
+            resolve(err)
         })
     })
+}
+
+export function getClientId() {
+    let clientId = Storage.get('client_id')
+    if (clientId) {
+        return clientId
+    }
+    clientId = randString(42)
+    Storage.set('client_id', clientId)
+    return clientId
 }

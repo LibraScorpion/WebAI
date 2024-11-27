@@ -48,13 +48,15 @@
             <el-divider class="divider">其他登录方式</el-divider>
 
             <div class="clogin">
-              <a class="wechat-login" :href="wechatLoginURL"><i class="iconfont icon-wechat"></i></a>
+              <a :href="wechatLoginURL" @click="setRoute(router.currentRoute.value.path)"><i class="iconfont icon-wechat"></i></a>
             </div>
           </div>
         </div>
       </div>
 
       <reset-pass @hide="showResetPass = false" :show="showResetPass"/>
+
+      <captcha v-if="enableVerify" @success="doLogin" ref="captchaRef"/>
       
       <footer-bar/>
     </div>
@@ -73,6 +75,9 @@ import {checkSession, getLicenseInfo, getSystemInfo} from "@/store/cache";
 import {setUserToken} from "@/store/session";
 import ResetPass from "@/components/ResetPass.vue";
 import {showMessageError} from "@/utils/dialog";
+import Captcha from "@/components/Captcha.vue";
+import {setRoute} from "@/store/system";
+import {useSharedStore} from "@/store/sharedata";
 
 const router = useRouter();
 const title = ref('Geek-AI');
@@ -82,12 +87,17 @@ const showResetPass = ref(false)
 const logo = ref("")
 const licenseConfig = ref({})
 const wechatLoginURL = ref('')
+const enableVerify = ref(false)
+const captchaRef = ref(null)
+// 是否需要验证码，输入一次密码错之后就要验证码
+const needVerify = ref(false)
 
 onMounted(() => {
   // 获取系统配置
   getSystemInfo().then(res => {
     logo.value = res.data.logo
     title.value = res.data.title
+    enableVerify.value = res.data['enabled_verify']
   }).catch(e => {
     showMessageError("获取系统配置失败：" + e.message)
   })
@@ -107,7 +117,7 @@ onMounted(() => {
   }).catch(() => {
   })
 
-  const returnURL = `${location.protocol}//${location.host}/login/callback`
+  const returnURL = `${location.protocol}//${location.host}/login/callback?action=login`
   httpGet("/api/user/clogin?return_url="+returnURL).then(res => {
     wechatLoginURL.value = res.data.url
   }).catch(e => {
@@ -129,8 +139,25 @@ const login = function () {
     return showMessageError('请输入密码');
   }
 
-  httpPost('/api/user/login', {username: username.value.trim(), password: password.value.trim()}).then((res) => {
+  if (enableVerify.value && needVerify.value) {
+    captchaRef.value.loadCaptcha()
+  } else {
+    doLogin({})
+  }
+}
+
+const store = useSharedStore()
+const doLogin = (verifyData) => {
+  httpPost('/api/user/login', {
+    username: username.value.trim(),
+    password: password.value.trim(),
+    key: verifyData.key,
+    dots: verifyData.dots,
+    x: verifyData.x
+  }).then((res) => {
     setUserToken(res.data.token)
+    store.setIsLogin(true)
+    needVerify.value = false
     if (isMobile()) {
       router.push('/mobile')
     } else {
@@ -139,9 +166,9 @@ const login = function () {
 
   }).catch((e) => {
     showMessageError('登录失败，' + e.message)
+    needVerify.value = true
   })
 }
-
 </script>
 
 <style lang="stylus" scoped>
